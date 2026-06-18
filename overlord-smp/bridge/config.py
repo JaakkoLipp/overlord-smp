@@ -61,6 +61,37 @@ class Config:
     coeff_max: int = int(os.getenv("COEFF_MAX", "80"))
     revival_min: int = int(os.getenv("REVIVAL_MIN", "5"))             # XP levels
     revival_max: int = int(os.getenv("REVIVAL_MAX", "60"))
+    link_radius_min: int = int(os.getenv("LINK_RADIUS_MIN", "4"))     # proximity blocks
+    link_radius_max: int = int(os.getenv("LINK_RADIUS_MAX", "64"))
+
+    # --- Demands (proactive, occasional) ---
+    demand_mean_minutes: float = float(os.getenv("DEMAND_MEAN_MINUTES", "60"))
+    demand_cooldown_minutes: float = float(os.getenv("DEMAND_COOLDOWN_MINUTES", "15"))
+    demand_min_players: int = int(os.getenv("DEMAND_MIN_PLAYERS", "2"))
+    demand_deadline_min: int = int(os.getenv("DEMAND_DEADLINE_MIN", "3"))     # minutes
+    demand_deadline_max: int = int(os.getenv("DEMAND_DEADLINE_MAX", "30"))
+    demand_threshold_max: int = int(os.getenv("DEMAND_THRESHOLD_MAX", "2000"))
+    demand_overtime_s: int = int(os.getenv("DEMAND_OVERTIME_S", "45"))        # reckoning window
+    # Allow-list of vanilla scoreboard criteria the model may demand progress on.
+    demand_criteria: list[str] = field(default_factory=lambda: _csv(
+        "DEMAND_CRITERIA",
+        "minecraft.mined:minecraft.diamond_ore,"
+        "minecraft.mined:minecraft.ancient_debris,"
+        "minecraft.mined:minecraft.iron_ore,"
+        "minecraft.killed:minecraft.zombie,"
+        "minecraft.killed:minecraft.skeleton,"
+        "minecraft.killed:minecraft.creeper,"
+        "minecraft.custom:minecraft.mob_kills,"
+        "minecraft.custom:minecraft.player_kills,"
+        "minecraft.custom:minecraft.damage_dealt,"
+        "minecraft.custom:minecraft.walk_one_cm,"
+        "minecraft.custom:minecraft.jump,"
+        "minecraft.crafted:minecraft.bread",
+    ))
+
+    # --- Memory ---
+    state_dir: str = os.getenv("STATE_DIR", "state")
+    chronicle_every: int = int(os.getenv("CHRONICLE_EVERY", "4"))  # fold after N resolved events
 
     def require(self) -> "Config":
         if not self.rcon_password:

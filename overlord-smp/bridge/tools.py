@@ -194,12 +194,137 @@ class SetRevivalCost(Tool):
         return f"revival cost set to {v} levels"
 
 
+class SetLinkRadius(Tool):
+    name = "set_soullink_radius"
+    description = (
+        "Set the soul-link proximity radius in blocks (only meaningful in proximity "
+        "mode). Shrinking it forces bonded players to scatter to avoid shared pain; "
+        "widening it makes grouping up dangerous."
+    )
+
+    class Params(BaseModel):
+        blocks: int
+
+    def run(self, rcon, p):
+        v = _clamp(p.blocks, self.cfg.link_radius_min, self.cfg.link_radius_max)
+        rcon.command(f"scoreboard players set #linkRadius ovGlobal {v}")
+        return f"soul-link radius set to {v} blocks"
+
+
+# --------------------------------------------------------------------------- #
+# Stakes: a reward/punishment is a deferred call to another (judgment) tool.   #
+# Validated structurally here; fully validated + executed at resolution time.  #
+# --------------------------------------------------------------------------- #
+def _validate_stake(registry_names: set[str], stake: dict, label: str) -> dict:
+    if not isinstance(stake, dict) or "tool" not in stake:
+        raise ValueError(f"{label} must be an object with a 'tool' field")
+    name = stake["tool"]
+    if name not in registry_names:
+        raise ValueError(f"{label} names unknown tool '{name}'")
+    args = stake.get("args", {})
+    if not isinstance(args, dict):
+        raise ValueError(f"{label} args must be an object")
+    return {"tool": name, "args": args}
+
+
+# Tools that may NOT be used as a demand stake (no recursion / meta).
+_STAKE_FORBIDDEN = {"issue_demand", "record_memory"}
+
+
+class IssueDemand(Tool):
+    name = "issue_demand"
+    description = (
+        "Issue a timed, collective demand to all players, enforced by a visible "
+        "countdown. Choose how it is verified:\n"
+        "  kind='score'    -> progress is measured on a vanilla scoreboard "
+        "criterion (pick one from the allowed list), summed across the group.\n"
+        "  kind='altar'    -> players must deliver `threshold` of an item (give its "
+        "id, e.g. minecraft:diamond) onto the altar.\n"
+        "  kind='freeform' -> any objective you describe in words; YOU will judge "
+        "whether it was satisfied when the deadline expires.\n"
+        "Provide a reward (fired if met) and a punishment (fired if failed), each as "
+        "{tool, args} naming one of your other tools."
+    )
+
+    class Params(BaseModel):
+        description: str = Field(..., max_length=240,
+                                 description="The demand, in your voice, shown to players.")
+        kind: str = Field(..., description="score | altar | freeform")
+        threshold: int = Field(1, description="Target count (score/altar).")
+        deadline_minutes: int = 10
+        criterion: str | None = Field(None, description="Scoreboard criterion for kind=score.")
+        item: str | None = Field(None, description="Item id for kind=altar, e.g. minecraft:diamond.")
+        reward: dict = Field(..., description="{tool, args} fired if the demand is met.")
+        punishment: dict = Field(..., description="{tool, args} fired if the demand fails.")
+
+        @field_validator("kind")
+        @classmethod
+        def _k(cls, v):
+            if v not in ("score", "altar", "freeform"):
+                raise ValueError("kind must be score, altar, or freeform")
+            return v
+
+    def __init__(self, cfg: Config, registry_names: set[str]):
+        super().__init__(cfg)
+        self._names = registry_names - _STAKE_FORBIDDEN
+
+    def validate_full(self, p: "IssueDemand.Params") -> dict:
+        """Cross-field validation + clamping. Returns a normalized demand dict."""
+        if p.kind == "score":
+            if p.criterion not in self.cfg.demand_criteria:
+                raise ValueError(f"criterion not allowed: {p.criterion!r}")
+        if p.kind == "altar":
+            if not p.item or not all(c.isalnum() or c in "_:" for c in p.item):
+                raise ValueError(f"invalid item id: {p.item!r}")
+        reward = _validate_stake(self._names, p.reward, "reward")
+        punishment = _validate_stake(self._names, p.punishment, "punishment")
+        kind_n = {"score": 0, "altar": 1, "freeform": 2}[p.kind]
+        threshold = _clamp(p.threshold, 1, self.cfg.demand_threshold_max)
+        minutes = _clamp(p.deadline_minutes, self.cfg.demand_deadline_min,
+                         self.cfg.demand_deadline_max)
+        return {
+            "description": p.description, "kind": p.kind, "kind_n": kind_n,
+            "threshold": threshold, "seconds": minutes * 60,
+            "criterion": p.criterion, "item": p.item,
+            "reward": reward, "punishment": punishment,
+        }
+
+
+class RecordMemory(Tool):
+    name = "record_memory"
+    description = (
+        "Record a salient memory to your chronicle: a grudge, a debt owed to you, a "
+        "promise, or something to remember about a player. Use sparingly, for things "
+        "that should shape how you treat them later."
+    )
+
+    class Params(BaseModel):
+        note: str = Field(..., max_length=300)
+        player: str | None = None
+
+    def run(self, rcon, p):
+        # Side effect is handled by the bridge (memory write); nothing to do in-world.
+        return f"remembered: {p.note}"
+
+
 # --------------------------------------------------------------------------- #
 # Registry                                                                     #
 # --------------------------------------------------------------------------- #
 def build_registry(cfg: Config) -> dict[str, Tool]:
-    tools = [
+    base = [
         Decree(cfg), Bless(cfg), Curse(cfg), Mercy(cfg), SummonThreat(cfg),
-        TightenBonds(cfg), SetRevivalCost(cfg),
+        TightenBonds(cfg), SetRevivalCost(cfg), SetLinkRadius(cfg),
+        RecordMemory(cfg),
     ]
+    names = {t.name for t in base} | {"issue_demand"}
+    tools = base + [IssueDemand(cfg, names)]
     return {t.name: t for t in tools}
+
+
+# Tool names offered to the model when judging tribute (everything except the
+# proactive demand tool, which is only offered in demand mode).
+JUDGMENT_TOOLS = {
+    "decree", "bless", "curse", "mercy", "summon_threat",
+    "set_soullink_coefficient", "set_revival_cost", "set_soullink_radius",
+    "record_memory",
+}

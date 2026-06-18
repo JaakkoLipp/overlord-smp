@@ -24,10 +24,17 @@ def _last_int(text: str, default: int = 0) -> int:
     return int(m[-1].group(1)) if m else default
 
 
-def read_seq(rcon: RconClient) -> int:
-    # "Storage overlord:bridge has the following value at seq: 7"
-    out = rcon.command("data get storage overlord:bridge seq")
+def read_seq(rcon: RconClient, channel: str = "seqTribute") -> int:
+    # "Storage overlord:bridge has the following value at seqTribute: 7"
+    out = rcon.command(f"data get storage overlord:bridge {channel}")
     return _last_int(out, default=0)
+
+
+def read_demand_result(rcon: RconClient) -> str:
+    out = rcon.command("data get storage overlord:bridge demandResult")
+    # response contains a quoted string; pull what's inside the quotes
+    m = re.search(r'"(met|failed|judge)"', out)
+    return m.group(1) if m else ""
 
 
 def online_players(rcon: RconClient) -> list[str]:
