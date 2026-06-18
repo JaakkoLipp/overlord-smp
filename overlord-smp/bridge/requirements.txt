@@ -1,0 +1,6 @@
+# Core
+openai>=1.40
+pydantic>=2.7
+# Optional
+python-dotenv>=1.0
+langfuse>=2.0   # only needed if LANGFUSE_ENABLED=true
