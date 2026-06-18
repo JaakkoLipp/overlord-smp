@@ -145,6 +145,18 @@ class Config:
     external_rituals: dict[str, str] = field(default_factory=lambda: _kv(
         "EXTERNAL_RITUALS", ""))
 
+    # --- Communal favor pool (the shared ledger the whole group feeds) ---
+    favor_pool_max: int = int(os.getenv("FAVOR_POOL_MAX", "1000"))    # bossbar scale
+    favor_spend_cost: int = int(os.getenv("FAVOR_SPEND_COST", "150"))  # cost per spend_favor
+    favor_boon_duration: int = int(os.getenv("FAVOR_BOON_DURATION", "40"))  # boon seconds
+    # Group boons the overlord may buy with pooled favor.
+    favor_boons: list[str] = field(default_factory=lambda: _csv(
+        "FAVOR_BOONS", "mercy,feast,reprieve,calm"))
+
+    # --- Foreshadowing (speak an omen now, deliver a deferred action later) ---
+    foreshadow_min_s: int = int(os.getenv("FORESHADOW_MIN_S", "10"))
+    foreshadow_max_s: int = int(os.getenv("FORESHADOW_MAX_S", "1800"))  # 30 minutes
+
     # --- Memory ---
     state_dir: str = os.getenv("STATE_DIR", "state")
     chronicle_every: int = int(os.getenv("CHRONICLE_EVERY", "4"))  # fold after N resolved events

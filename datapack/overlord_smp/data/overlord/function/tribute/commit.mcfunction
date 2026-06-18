@@ -11,6 +11,9 @@ scoreboard players operation #trib ovTmp += #v ovTmp
 # Award to nearest player (the donor). ovTribute is consumed by the bridge; ovFavor is the running ledger.
 execute as @p[distance=..12] run scoreboard players operation @s ovTribute += #trib ovTmp
 execute as @p[distance=..12] run scoreboard players operation @s ovFavor += #trib ovTmp
+# Every tribute also feeds the communal favor pool: one shared number the group fills.
+scoreboard players operation #favorPool ovGlobal += #trib ovTmp
+function overlord:favor/show_bar
 kill @e[type=item,distance=..3]
 tellraw @a {"text":"[Overlord] A tribute is received. The presence deliberates...","color":"dark_purple","italic":true}
 # Bump the bridge tribute sequence so the Python overlord wakes up.

@@ -3,6 +3,7 @@ $scoreboard players set #demandThreshold ovGlobal $(threshold)
 $scoreboard players set #demandTimer ovGlobal $(seconds)
 $scoreboard players set #demandMax ovGlobal $(seconds)
 $scoreboard players set #demandOvertime ovGlobal $(overtime)
+$scoreboard players set #sacSource ovGlobal $(source)
 scoreboard players set #demandProg ovGlobal 0
 scoreboard players set #demandPhase ovGlobal 0
 scoreboard players operation #demandHalf ovGlobal = #demandMax ovGlobal
@@ -21,3 +22,6 @@ bossbar set overlord:demand visible true
 scoreboard players set #demandActive ovGlobal 1
 scoreboard players set #secCounter ovGlobal 0
 function overlord:demand/update_bar
+# Kind-specific setup that needs the bar already raised.
+execute if score #demandKind ovGlobal matches 3 run function overlord:demand/survive_begin
+execute if score #demandKind ovGlobal matches 4 run function overlord:demand/sacrifice_begin

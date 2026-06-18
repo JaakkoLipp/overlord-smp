@@ -54,6 +54,31 @@ bossbar set overlord:wrath color white
 bossbar set overlord:wrath style notched_10
 bossbar set overlord:wrath visible false
 
+# Communal favor pool: one shared ledger the whole group fills with tribute and the
+# overlord spends for relief. Persist the pool across reload; the bridge re-syncs the
+# scale on startup. Always visible: it is the shared common-goal number.
+execute unless score #favorPool ovGlobal matches -2147483648.. run scoreboard players set #favorPool ovGlobal 0
+scoreboard players set #favorMax ovGlobal 1000
+# Monotonic death tally (survive ordeals baseline against it) and survive scratch.
+scoreboard players add #deathTally ovGlobal 0
+scoreboard players add #surviveBaseDeaths ovGlobal 0
+bossbar remove overlord:favor
+bossbar add overlord:favor [{"text":"Favor of the Realm","color":"green"}]
+bossbar set overlord:favor color green
+bossbar set overlord:favor style notched_10
+bossbar set overlord:favor players @a
+bossbar set overlord:favor visible true
+execute store result bossbar overlord:favor max run scoreboard players get #favorMax ovGlobal
+execute store result bossbar overlord:favor value run scoreboard players get #favorPool ovGlobal
+
+# Group vitals bar: shown only during a survive ordeal (the weakest member's health).
+bossbar remove overlord:vitals
+bossbar add overlord:vitals [{"text":"♥ Group Vitals","color":"red"}]
+bossbar set overlord:vitals color red
+bossbar set overlord:vitals max 20
+bossbar set overlord:vitals style notched_10
+bossbar set overlord:vitals visible false
+
 # Lethal world; deaths are handled by us, not vanilla respawn.
 gamerule naturalRegeneration false
 gamerule doImmediateRespawn true

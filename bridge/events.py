@@ -91,5 +91,6 @@ def world_state(rcon: RconClient) -> dict:
         "revival_cost_levels": get_score(rcon, "#revivalXp", "ovGlobal"),
         "wrath_level": get_score(rcon, "#wrath", "ovGlobal"),
         "wrath_max": get_score(rcon, "#wrathMax", "ovGlobal"),
+        "favor_pool": get_score(rcon, "#favorPool", "ovGlobal"),
         "players": players,
     }

@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 # Make the bridge package importable whether run from repo root or bridge/.
@@ -282,6 +283,140 @@ class TestBridgeWrathCoupling(unittest.TestCase):
         b.last_wrath_decay = 0.0
         b._maybe_decay_wrath()
         self.assertFalse(b.rcon.has("scoreboard players set #wrath ovGlobal 1"))
+
+
+# --------------------------------------------------------------------------- #
+# spend_favor                                                                   #
+# --------------------------------------------------------------------------- #
+class TestSpendFavor(unittest.TestCase):
+    def setUp(self):
+        self.c = cfg()
+        self.tool = build_registry(self.c)["spend_favor"]
+
+    def test_rejects_off_allowlist_boon(self):
+        r = FakeRcon({("#favorPool", "ovGlobal"): 9999})
+        out = self.tool.run(r, self.tool.Params(boon="apocalypse"))
+        self.assertTrue(out.startswith("refused"))
+        self.assertFalse(r.has("scoreboard players remove #favorPool"))
+
+    def test_refuses_when_pool_too_thin(self):
+        r = FakeRcon({("#favorPool", "ovGlobal"): 1})
+        out = self.tool.run(r, self.tool.Params(boon="mercy"))
+        self.assertTrue(out.startswith("refused"))
+        self.assertFalse(r.has("scoreboard players remove #favorPool"))
+
+    def test_mercy_spends_and_heals_group(self):
+        r = FakeRcon({("#favorPool", "ovGlobal"): 9999})
+        self.tool.run(r, self.tool.Params(boon="mercy"))
+        self.assertTrue(r.has(f"scoreboard players remove #favorPool ovGlobal {self.c.favor_spend_cost}"))
+        self.assertTrue(r.has("effect give @a minecraft:regeneration"))
+
+    def test_calm_lowers_wrath_through_push(self):
+        r = FakeRcon({("#favorPool", "ovGlobal"): 9999, ("#wrath", "ovGlobal"): 3})
+        self.tool.run(r, self.tool.Params(boon="calm"))
+        self.assertTrue(r.has("scoreboard players set #wrath ovGlobal 2"))
+
+
+# --------------------------------------------------------------------------- #
+# foreshadow                                                                    #
+# --------------------------------------------------------------------------- #
+class TestForeshadow(unittest.TestCase):
+    def setUp(self):
+        self.tool = build_registry(cfg())["foreshadow"]
+
+    def test_speaks_omen(self):
+        r = FakeRcon()
+        out = self.tool.run(r, self.tool.Params(omen="In ten minutes, I collect."))
+        self.assertIn("omen", out)
+        self.assertTrue(any("[An Omen]" in c for c in r.commands))
+
+    def test_then_is_optional(self):
+        # A pure prophecy validates with no deferred action.
+        p = self.tool.Params(omen="A reckoning nears.")
+        self.assertIsNone(p.then)
+
+    def test_forbidden_as_stake(self):
+        from tools import _STAKE_FORBIDDEN
+        self.assertIn("foreshadow", _STAKE_FORBIDDEN)
+
+
+# --------------------------------------------------------------------------- #
+# issue_demand: survive + sacrifice kinds                                       #
+# --------------------------------------------------------------------------- #
+class TestDemandKinds(unittest.TestCase):
+    def setUp(self):
+        self.c = cfg()
+        self.tool = build_registry(self.c)["issue_demand"]
+
+    def _params(self, **kw):
+        base = dict(description="Endure.", kind="survive",
+                    reward={"tool": "decree", "args": {}},
+                    punishment={"tool": "decree", "args": {}})
+        base.update(kw)
+        return self.tool.Params(**base)
+
+    def test_survive_kind_maps(self):
+        spec = self.tool.validate_full(self._params(kind="survive"))
+        self.assertEqual(spec["kind_n"], 3)
+        self.assertEqual(spec["source_n"], 0)
+
+    def test_sacrifice_altar(self):
+        spec = self.tool.validate_full(self._params(kind="sacrifice", source="altar", threshold=64))
+        self.assertEqual(spec["kind_n"], 4)
+        self.assertEqual(spec["source_n"], 0)
+
+    def test_sacrifice_pool(self):
+        spec = self.tool.validate_full(self._params(kind="sacrifice", source="pool", threshold=300))
+        self.assertEqual(spec["kind_n"], 4)
+        self.assertEqual(spec["source_n"], 1)
+
+    def test_sacrifice_bad_source_rejected(self):
+        with self.assertRaises(ValueError):
+            self.tool.validate_full(self._params(kind="sacrifice", source="moon"))
+
+    def test_unknown_kind_rejected(self):
+        with self.assertRaises(Exception):
+            self._params(kind="vibes")
+
+
+# --------------------------------------------------------------------------- #
+# bridge: foreshadow scheduling                                                 #
+# --------------------------------------------------------------------------- #
+class TestBridgeOmens(unittest.TestCase):
+    def _omen_params(self, **kw):
+        tool = build_registry(cfg())["foreshadow"]
+        base = dict(omen="An omen.", seconds_until=30,
+                    then={"tool": "decree", "args": {"message": "boom"}})
+        base.update(kw)
+        return tool.Params(**base)
+
+    def test_schedules_payload(self):
+        b = _make_bridge({})
+        b._schedule_omen(self._omen_params())
+        self.assertEqual(len(b.pending_omens), 1)
+
+    def test_pure_prophecy_schedules_nothing(self):
+        b = _make_bridge({})
+        b._schedule_omen(self._omen_params(then=None))
+        self.assertEqual(b.pending_omens, [])
+
+    def test_forbidden_payload_not_scheduled(self):
+        b = _make_bridge({})
+        b._schedule_omen(self._omen_params(then={"tool": "issue_demand", "args": {}}))
+        self.assertEqual(b.pending_omens, [])
+
+    def test_seconds_until_clamped(self):
+        b = _make_bridge({})
+        b._schedule_omen(self._omen_params(seconds_until=10_000_000))
+        fire_at, _ = b.pending_omens[0]
+        self.assertLessEqual(fire_at, time.time() + b.cfg.foreshadow_max_s + 1)
+
+    def test_due_omen_fires_payload(self):
+        b = _make_bridge({})
+        b.pending_omens = [(0.0, {"tool": "decree", "args": {"message": "now"}})]
+        b._fire_due_omens()
+        self.assertEqual(b.pending_omens, [])
+        self.assertTrue(any("[Overlord]" in c for c in b.rcon.commands))
 
 
 if __name__ == "__main__":

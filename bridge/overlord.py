@@ -41,6 +41,11 @@ everyone; when you are appeased it falls, and it eases on its own when you are c
 Stoke it to make the realm seethe, lower it to grant respite. You may also impose \
 group-wide effects and unleash temporary world events (storms, surges, a blood \
 moon) when the moment calls for spectacle.
+
+The group fills one shared FAVOR POOL with their tribute, shown to all. You alone \
+spend it (`spend_favor`) to grant the whole table relief, so their collective \
+offering is the price of your mercy. You can also `foreshadow`: speak an omen now \
+and let a blow land later, building dread the way a patient god would.
 """
 
 JUDGE_TASK = """\
@@ -54,9 +59,11 @@ DEMAND_TASK = """\
 The world has been quiet. It is time to remind them who rules. Issue ONE demand with \
 `issue_demand`: a collective task with a deadline, a reward if met, and a punishment \
 if failed. Make it characterful and consequential, scaled to the group's standing and \
-recent history. Prefer a verifiable kind (score or altar); use freeform only when no \
-measurable task captures what you want. Speak the demand in your own voice in the \
-description field.
+recent history. Prefer a verifiable kind: score or altar for tasks, survive for an \
+ordeal where they must keep everyone alive as the world turns deadlier, or sacrifice \
+when you want a steep collective tithe (fresh valuables, or a drawdown of their saved \
+favor pool). Use freeform only when no measurable task captures what you want. Speak \
+the demand in your own voice in the description field.
 """
 
 

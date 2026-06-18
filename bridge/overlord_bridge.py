@@ -59,6 +59,8 @@ class Bridge:
         self.resolved_since_fold = 0
         self.seq_tribute = 0
         self.seq_demand = 0
+        # Foreshadowed actions: (fire_at_epoch, {tool, args}) scheduled by the bridge.
+        self.pending_omens: list[tuple[float, dict]] = []
 
     # -- lifecycle ------------------------------------------------------ #
     def start(self):
@@ -69,6 +71,9 @@ class Bridge:
         # the scoreboard, and the visible bar stay consistent after a restart.
         self.last_wrath_decay = time.time()
         wrath = self._set_wrath(events.get_score(self.rcon, "#wrath", "ovGlobal"))
+        # Keep the favor-pool bossbar scale in sync with config, then refresh it.
+        self.rcon.command(f"scoreboard players set #favorMax ovGlobal {self.cfg.favor_pool_max}")
+        self.rcon.command("function overlord:favor/show_bar")
         log.info("bridge online. tribute=%s demand=%s wrath=%s, %d tools, model=%s",
                  self.seq_tribute, self.seq_demand, wrath, len(self.registry),
                  self.cfg.llm_model)
@@ -80,6 +85,7 @@ class Bridge:
                 self._poll_demand()
                 self._maybe_issue_demand()
                 self._maybe_decay_wrath()
+                self._fire_due_omens()
             except Exception as exc:
                 log.exception("cycle error: %s", exc)
                 time.sleep(2.0)
@@ -186,11 +192,20 @@ class Bridge:
             self.rcon.command(f'scoreboard objectives add ovDemand {spec["criterion"]}')
             time.sleep(0.4)  # let statistic values populate before baselining
 
+        if spec["kind"] == "survive":
+            # A survive ordeal escalates via the surge plumbing; give it a themed mob
+            # so the datapack's ramped waves have something to draw from.
+            mob = random.choice(self.cfg.surge_mobs) if self.cfg.surge_mobs else "zombie"
+            self.rcon.command(
+                'data modify storage overlord:event set value '
+                '{event:"ordeal",magnitude:3,duration:0,cadence:5,cap:12,'
+                f'surge_mob:"{mob}",weather:"thunder"}}')
+
         item = spec["item"] or "minecraft:air"
         text = _snbt_str(spec["description"])
-        snbt = ('{kind:%d,threshold:%d,seconds:%d,overtime:%d,item:"%s",text:"%s"}'
+        snbt = ('{kind:%d,threshold:%d,seconds:%d,overtime:%d,source:%d,item:"%s",text:"%s"}'
                 % (spec["kind_n"], spec["threshold"], spec["seconds"],
-                   self.cfg.demand_overtime_s, _snbt_str(item), text))
+                   self.cfg.demand_overtime_s, spec["source_n"], _snbt_str(item), text))
         self.rcon.command(f"data modify storage overlord:demand set value {snbt}")
         self.rcon.command("function overlord:demand/begin")
         self.rcon.command(
@@ -215,6 +230,38 @@ class Bridge:
                 log.info("  -> %s: %s", name, res)
             except Exception as exc:
                 log.error("  -> %s failed: %s", name, exc)
+                continue
+            if name == "foreshadow":
+                self._schedule_omen(params)
+
+    def _schedule_omen(self, params):
+        """The omen line is already spoken by the tool; here we queue its deferred
+        payload (if any) to fire after a clamped delay."""
+        secs = max(self.cfg.foreshadow_min_s,
+                   min(self.cfg.foreshadow_max_s, int(getattr(params, "seconds_until", 120))))
+        self.log.append("foreshadow", note=getattr(params, "omen", ""), fire_in=secs)
+        payload = getattr(params, "then", None)
+        if not isinstance(payload, dict) or "tool" not in payload:
+            return  # pure prophecy: mood only, nothing scheduled
+        if payload["tool"] in ("foreshadow", "issue_demand"):
+            log.info("omen payload %r not schedulable; speaking prophecy only", payload["tool"])
+            return
+        self.pending_omens.append((time.time() + secs, payload))
+        log.info("omen scheduled: %s in %ss", payload["tool"], secs)
+
+    def _fire_due_omens(self):
+        if not self.pending_omens:
+            return
+        now = time.time()
+        due = [o for o in self.pending_omens if o[0] <= now]
+        if not due:
+            return
+        self.pending_omens = [o for o in self.pending_omens if o[0] > now]
+        for _, payload in due:
+            log.info("omen strikes: %s", payload.get("tool"))
+            self.rcon.command('tellraw @a {"text":"[Overlord] The omen comes to pass.",'
+                              '"color":"dark_red","italic":true}')
+            self._fire_stake(payload)
 
     def _fire_stake(self, stake: dict):
         tool = self.registry.get(stake.get("tool"))

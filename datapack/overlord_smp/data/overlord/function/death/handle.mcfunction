@@ -1,5 +1,7 @@
 # context: @s = a player whose deathCount just incremented.
 scoreboard players set @s ovDeaths 0
+# Monotonic tally so survive ordeals can detect a fresh death (survives revival).
+scoreboard players add #deathTally ovGlobal 1
 tag @s add ov_dead
 gamemode spectator @s
 title @s times 10 60 20

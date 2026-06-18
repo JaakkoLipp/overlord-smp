@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, field_validator
@@ -25,9 +26,21 @@ from rcon import RconClient
 
 log = logging.getLogger("overlord.tools")
 
+_INT_RE = re.compile(r"(-?\d+)")
+
 
 def _clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
+
+
+def _read_int(rcon: RconClient, cmd: str, default: int = 0) -> int:
+    """Read a single scoreboard value over RCON (for tools that must gate on world
+    state, e.g. spending the favor pool only if it can afford the cost)."""
+    out = rcon.command(cmd)
+    if "none is set" in out.lower() or "unknown" in out.lower():
+        return default
+    m = list(_INT_RE.finditer(out))
+    return int(m[-1].group(1)) if m else default
 
 
 def _fmt(x: float) -> str:
@@ -55,6 +68,26 @@ def _wrath_appearance(level: int, maximum: int) -> tuple[str, str]:
     color = "yellow" if frac < 0.34 else ("red" if frac < 0.67 else "purple")
     label = _WRATH_LABELS[min(level, len(_WRATH_LABELS) - 1)]
     return color, label
+
+
+def push_wrath(rcon: RconClient, cfg: Config, level: int) -> tuple[int, str]:
+    """Push a clamped wrath level into the world: fractions to storage, the level to
+    the scoreboard, and the bossbar. Shared by set_wrath, spend_favor (calm), and the
+    bridge so the level-to-fraction math lives in exactly one place."""
+    lvl = _clamp(level, 0, cfg.wrath_max)
+    dmg = _wrath_frac(cfg.wrath_mob_dmg, lvl)
+    hp = _wrath_frac(cfg.wrath_mob_hp, lvl)
+    color, label = _wrath_appearance(lvl, cfg.wrath_max)
+    snbt = ('{level:%d,dmg:"%s",hp:"%s",radius:%d,color:"%s",label:"%s"}'
+            % (lvl, _fmt(dmg), _fmt(hp), cfg.wrath_buff_radius, color, label))
+    rcon.command(f"data modify storage overlord:wrath set value {snbt}")
+    rcon.command(f"scoreboard players set #wrath ovGlobal {lvl}")
+    rcon.command(f"scoreboard players set #wrathMax ovGlobal {cfg.wrath_max}")
+    if lvl >= 1:
+        rcon.command("function overlord:wrath/show_bar")
+    else:
+        rcon.command("bossbar set overlord:wrath visible false")
+    return lvl, label
 
 
 def _sanitize_player(name: str) -> str:
@@ -259,21 +292,9 @@ class SetWrath(Tool):
         level: int = Field(..., description="Target wrath level; clamped to 0..max.")
 
     def run(self, rcon, p):
-        lvl = _clamp(p.level, 0, self.cfg.wrath_max)
-        dmg = _wrath_frac(self.cfg.wrath_mob_dmg, lvl)
-        hp = _wrath_frac(self.cfg.wrath_mob_hp, lvl)
-        color, label = _wrath_appearance(lvl, self.cfg.wrath_max)
-        # Fractions are stored as strings so the datapack macro substitutes a clean
+        # Fractions stored as strings so the datapack macro substitutes a clean
         # number into the attribute command (no NBT type suffix to trip the parser).
-        snbt = ('{level:%d,dmg:"%s",hp:"%s",radius:%d,color:"%s",label:"%s"}'
-                % (lvl, _fmt(dmg), _fmt(hp), self.cfg.wrath_buff_radius, color, label))
-        rcon.command(f"data modify storage overlord:wrath set value {snbt}")
-        rcon.command(f"scoreboard players set #wrath ovGlobal {lvl}")
-        rcon.command(f"scoreboard players set #wrathMax ovGlobal {self.cfg.wrath_max}")
-        if lvl >= 1:
-            rcon.command("function overlord:wrath/show_bar")
-        else:
-            rcon.command("bossbar set overlord:wrath visible false")
+        lvl, label = push_wrath(rcon, self.cfg, p.level)
         return f"wrath set to {lvl}/{self.cfg.wrath_max} ({label})"
 
 
@@ -386,6 +407,73 @@ class InvokeRitual(Tool):
         return f"invoked ritual '{p.name}' ({fid})"
 
 
+class SpendFavor(Tool):
+    name = "spend_favor"
+    description = (
+        "Spend from the communal favor pool the group has filled with tribute to "
+        "grant the WHOLE group relief. Pick a boon: 'mercy' (group regeneration), "
+        "'feast' (saturation plus brief regen), 'reprieve' (group resistance), or "
+        "'calm' (lower your own wrath by one level). Refused if the pool cannot "
+        "afford the cost. This is how their shared offering buys your mercy."
+    )
+
+    class Params(BaseModel):
+        boon: str
+
+    def run(self, rcon, p):
+        boon = p.boon.strip().lower().removeprefix("minecraft:")
+        if boon not in self.cfg.favor_boons:
+            return (f"refused: '{boon}' is not an offered boon "
+                    f"({', '.join(self.cfg.favor_boons)})")
+        cost = self.cfg.favor_spend_cost
+        pool = _read_int(rcon, "scoreboard players get #favorPool ovGlobal")
+        if pool < cost:
+            return f"refused: the favor pool holds {pool}, the boon costs {cost}"
+        rcon.command(f"scoreboard players remove #favorPool ovGlobal {cost}")
+        rcon.command("function overlord:favor/show_bar")
+        dur = _clamp(self.cfg.favor_boon_duration, 1, self.cfg.max_duration_s)
+        if boon == "mercy":
+            rcon.command(f"effect give @a minecraft:regeneration {dur} 1")
+        elif boon == "feast":
+            rcon.command(f"effect give @a minecraft:saturation {min(dur, 10)} 0")
+            rcon.command(f"effect give @a minecraft:regeneration {dur} 0")
+        elif boon == "reprieve":
+            rcon.command(f"effect give @a minecraft:resistance {dur} 1")
+        elif boon == "calm":
+            cur = _read_int(rcon, "scoreboard players get #wrath ovGlobal")
+            push_wrath(rcon, self.cfg, max(0, cur - 1))
+        rcon.command(
+            f'tellraw @a [{{"text":"[Overlord] ","color":"dark_purple","bold":true}},'
+            f'{{"text":"The realm spends its favor: {boon}.","color":"light_purple","italic":true}}]')
+        return f"spent {cost} favor on {boon} (pool now {pool - cost})"
+
+
+class Foreshadow(Tool):
+    name = "foreshadow"
+    description = (
+        "Speak an omen NOW and, optionally, schedule a single pre-validated action to "
+        "strike later, after `seconds_until`. Use this to build dread before a blow "
+        "lands ('in ten minutes, I collect what is owed'). The deferred action is one "
+        "of your other tools, named in `then` as {tool, args}; omit `then` for a pure "
+        "prophecy that only sets the mood."
+    )
+
+    class Params(BaseModel):
+        omen: str = Field(..., max_length=240,
+                          description="The omen, in your voice, shown to players now.")
+        seconds_until: int = Field(120, description="Delay before `then` fires; clamped.")
+        then: dict | None = Field(
+            None, description="Optional {tool, args} action to fire after the delay.")
+
+    def run(self, rcon, p):
+        text = p.omen.replace('"', "'")
+        rcon.command(
+            f'tellraw @a [{{"text":"\\u00a7l[An Omen] \\u00a7r","color":"dark_red","bold":true}},'
+            f'{{"text":"{text}","color":"gray","italic":true}}]')
+        rcon.command("playsound minecraft:block.bell.use master @a ~ ~ ~ 1 0.4")
+        return f"omen spoken: {text}"
+
+
 # --------------------------------------------------------------------------- #
 # Stakes: a reward/punishment is a deferred call to another (judgment) tool.   #
 # Validated structurally here; fully validated + executed at resolution time.  #
@@ -402,8 +490,9 @@ def _validate_stake(registry_names: set[str], stake: dict, label: str) -> dict:
     return {"tool": name, "args": args}
 
 
-# Tools that may NOT be used as a demand stake (no recursion / meta).
-_STAKE_FORBIDDEN = {"issue_demand", "record_memory"}
+# Tools that may NOT be used as a demand stake (no recursion / meta). foreshadow is
+# excluded so a demand resolution cannot schedule yet another deferred action.
+_STAKE_FORBIDDEN = {"issue_demand", "record_memory", "foreshadow"}
 
 
 class IssueDemand(Tool):
@@ -417,6 +506,13 @@ class IssueDemand(Tool):
         "id, e.g. minecraft:diamond) onto the altar.\n"
         "  kind='freeform' -> any objective you describe in words; YOU will judge "
         "whether it was satisfied when the deadline expires.\n"
+        "  kind='survive'  -> an ORDEAL: the whole group must keep everyone alive "
+        "until the deadline. Any single death fails it instantly. The world grows "
+        "steadily deadlier as the clock runs down (bonds tighten, hordes intensify).\n"
+        "  kind='sacrifice'-> the group must pay a steep tribute of `threshold` value "
+        "to be spared. source='altar' demands fresh valuables delivered to the altar "
+        "(diamonds, netherite, gold, totems, weighted by worth); source='pool' demands "
+        "they spend `threshold` from the communal favor pool they have saved.\n"
         "Provide a reward (fired if met) and a punishment (fired if failed), each as "
         "{tool, args} naming one of your other tools."
     )
@@ -424,19 +520,20 @@ class IssueDemand(Tool):
     class Params(BaseModel):
         description: str = Field(..., max_length=240,
                                  description="The demand, in your voice, shown to players.")
-        kind: str = Field(..., description="score | altar | freeform")
-        threshold: int = Field(1, description="Target count (score/altar).")
+        kind: str = Field(..., description="score | altar | freeform | survive | sacrifice")
+        threshold: int = Field(1, description="Target count/value (score/altar/sacrifice).")
         deadline_minutes: int = 10
         criterion: str | None = Field(None, description="Scoreboard criterion for kind=score.")
         item: str | None = Field(None, description="Item id for kind=altar, e.g. minecraft:diamond.")
+        source: str = Field("altar", description="For kind=sacrifice: 'altar' or 'pool'.")
         reward: dict = Field(..., description="{tool, args} fired if the demand is met.")
         punishment: dict = Field(..., description="{tool, args} fired if the demand fails.")
 
         @field_validator("kind")
         @classmethod
         def _k(cls, v):
-            if v not in ("score", "altar", "freeform"):
-                raise ValueError("kind must be score, altar, or freeform")
+            if v not in ("score", "altar", "freeform", "survive", "sacrifice"):
+                raise ValueError("kind must be score, altar, freeform, survive, or sacrifice")
             return v
 
     def __init__(self, cfg: Config, registry_names: set[str]):
@@ -451,9 +548,14 @@ class IssueDemand(Tool):
         if p.kind == "altar":
             if not p.item or not all(c.isalnum() or c in "_:" for c in p.item):
                 raise ValueError(f"invalid item id: {p.item!r}")
+        source_n = 0
+        if p.kind == "sacrifice":
+            if p.source not in ("altar", "pool"):
+                raise ValueError(f"sacrifice source must be altar or pool: {p.source!r}")
+            source_n = {"altar": 0, "pool": 1}[p.source]
         reward = _validate_stake(self._names, p.reward, "reward")
         punishment = _validate_stake(self._names, p.punishment, "punishment")
-        kind_n = {"score": 0, "altar": 1, "freeform": 2}[p.kind]
+        kind_n = {"score": 0, "altar": 1, "freeform": 2, "survive": 3, "sacrifice": 4}[p.kind]
         threshold = _clamp(p.threshold, 1, self.cfg.demand_threshold_max)
         minutes = _clamp(p.deadline_minutes, self.cfg.demand_deadline_min,
                          self.cfg.demand_deadline_max)
@@ -461,6 +563,7 @@ class IssueDemand(Tool):
             "description": p.description, "kind": p.kind, "kind_n": kind_n,
             "threshold": threshold, "seconds": minutes * 60,
             "criterion": p.criterion, "item": p.item,
+            "source": p.source, "source_n": source_n,
             "reward": reward, "punishment": punishment,
         }
 
@@ -490,7 +593,7 @@ def build_registry(cfg: Config) -> dict[str, Tool]:
         Decree(cfg), Bless(cfg), Curse(cfg), Mercy(cfg), SummonThreat(cfg),
         TightenBonds(cfg), SetRevivalCost(cfg), SetLinkRadius(cfg),
         SetWrath(cfg), MassEffect(cfg), WorldEvent(cfg), InvokeRitual(cfg),
-        RecordMemory(cfg),
+        SpendFavor(cfg), Foreshadow(cfg), RecordMemory(cfg),
     ]
     names = {t.name for t in base} | {"issue_demand"}
     tools = base + [IssueDemand(cfg, names)]
@@ -504,5 +607,5 @@ JUDGMENT_TOOLS = {
     "decree", "bless", "curse", "mercy", "summon_threat",
     "set_soullink_coefficient", "set_revival_cost", "set_soullink_radius",
     "set_wrath", "mass_effect", "world_event", "invoke_ritual",
-    "record_memory",
+    "spend_favor", "foreshadow", "record_memory",
 }
