@@ -1,1 +1,0 @@
-$bossbar set overlord:demand name [{"text":"DEMAND  ","color":"dark_red","bold":true},{"text":"$(text)","color":"white","bold":false},{"text":"   ","color":"gray"},{"score":{"name":"#demandProg","objective":"ovGlobal"},"color":"yellow"},{"text":" / ","color":"gray"},{"score":{"name":"#demandThreshold","objective":"ovGlobal"},"color":"gray"}]

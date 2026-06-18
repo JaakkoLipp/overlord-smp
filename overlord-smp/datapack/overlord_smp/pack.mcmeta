@@ -1,7 +1,0 @@
-{
-  "pack": {
-    "description": "Overlord SMP :: core survival systems (no-regen, soul-link, permadeath+revival, overlord hooks)",
-    "min_format": 107,
-    "max_format": 107
-  }
-}

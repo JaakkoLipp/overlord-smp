@@ -1,9 +1,0 @@
-function overlord:demand/restore_bonds
-scoreboard players set #failStreak ovGlobal 0
-execute as @a run scoreboard players add @s ovFavor 5
-data modify storage overlord:bridge demandResult set value "met"
-scoreboard players add #seqDemand ovGlobal 1
-execute store result storage overlord:bridge seqDemand int 1 run scoreboard players get #seqDemand ovGlobal
-function overlord:demand/cleanup
-playsound minecraft:ui.toast.challenge_complete master @a ~ ~ ~ 1 1
-tellraw @a {"text":"[Overlord] The demand is met. You live to serve another day.","color":"green","italic":true}
