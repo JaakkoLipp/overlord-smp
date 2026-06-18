@@ -8,6 +8,7 @@ that reacts to player tribute. Built for under six players.
 - **Permadeath + revival** — death sends you to spectator; the living buy you back at the altar with a Totem of Undying plus XP levels.
 - **The Overlord** — an LLM that reads world state and a player's tribute, then acts through a fixed set of typed, validated tools. It both *reacts* to tribute and *proactively issues timed demands*. It is the *only* escalating pressure; the three survival systems are flat. (One escalator, by design, so the difficulty multiplies controllably instead of spiralling.)
 - **Demands** — occasionally the overlord issues a collective, timed demand enforced by a visible bossbar countdown. Fulfilment is verified one of three ways (a vanilla scoreboard criterion summed across the group, an altar item delivery, or a freeform objective the model judges at the deadline). The clock escalates through phases and ends in a "Reckoning" overtime; success and failure each fire a typed reward or punishment tool.
+- **Wrath and world events.** The overlord's mood is a single shared, visible meter on a bossbar. While it is up, hostile mobs near players are empowered and the world darkens for everyone; a met demand soothes it, a failed one stokes it (harder on a failure streak), and it decays toward calm when the overlord is idle. It is the overlord's hand on the dial made legible, *not* a second always-rising curve. Alongside it, the overlord can impose group-wide effects and unleash temporary, self-reverting world events (spawn surges, storms, nightfall, dread, a blood moon), and can invoke owner-vetted rituals from external datapacks. Every one of these is one more typed tool with its own clamps and allow-lists.
 - **Memory** — the overlord keeps a persistent event library (append-only on disk) plus a model-maintained chronicle, so it remembers tribute, grudges, and past demands across restarts.
 
 Everything above is a set of **dials the overlord can read and turn**: the soul-link coefficient, the revival cost, per-player buffs and curses. The four features are really one system with a god's hands on it.
@@ -27,6 +28,7 @@ bridge/                     # the Python overlord (runs beside the server, talks
 - **Singular directory names** (`function`, `tags/function`) — correct at this format.
 - The **entity-predicate format changed in 26.2** (component-style map, unknown fields now rejected). This datapack deliberately avoids entity predicates and builds on scoreboards, tags, and `/damage`, so it is unaffected.
 - `damage_taken` is a **lifetime cumulative stat**, so soul-link initialises a per-player baseline (`ov_init`) on first tick. Without that, a player's first bonded tick would transfer their entire lifetime damage at once.
+- Wrath uses **named attribute modifiers** (resource-location ids, `add_multiplied_base` operation) and a custom **entity-type tag** (`tags/entity_type/overlord:hostiles`), both current at this format. Attribute ids dropped their `generic.` prefix in 1.21.2, so the datapack uses `minecraft:attack_damage` / `minecraft:max_health`. A handful of mobs (creepers) have no attack-damage attribute, so that one modifier simply no-ops for them.
 
 ## Server setup
 
@@ -68,6 +70,13 @@ The bridge points at any OpenAI-compatible endpoint via `LLM_BASE_URL`, so your
 LiteLLM gateway in front of the local 3090 works unchanged. Set
 `LANGFUSE_ENABLED=true` (and the keys) to trace every divine judgement.
 
+The typed-tool boundary (validation, clamping, allow-list refusals, the wrath
+coupling) has unit tests that need only `pydantic`:
+
+```bash
+python -m pytest bridge/tests        # or: python -m unittest discover bridge/tests
+```
+
 ## How a tribute flows
 
 1. A player drops items near the altar, then drops a **gold ingot** as the commit token ("ring the bell").
@@ -85,6 +94,13 @@ deliberates" when the tribute landed.
 3. For `score` demands the bridge creates a scoreboard objective with the chosen criterion and baselines it; for `altar` it passes the item id; for `freeform` it stores the text. It writes the demand into `storage overlord:demand` and runs `demand/begin`, which raises the bossbar and announces it.
 4. The datapack owns the clock from here: it counts down on the bossbar, measures group progress every second, and crosses phases (orange at half, red and tightened bonds at quarter, the Reckoning overtime at zero).
 5. On resolution the datapack writes `met` / `failed` / `judge` to `demandResult` and bumps `seqDemand`. The bridge reads it and fires the staked reward or punishment (for `freeform` it judges fulfilment first), then records the outcome to memory.
+
+## How wrath flows
+
+1. The overlord sets its wrath with the `set_wrath` tool (or it shifts automatically: a met demand lowers it, a failed demand raises it, scaled by the failure streak). The bridge owns the level-to-fraction math, pushes the mob-buff fractions and bar appearance into `storage overlord:wrath`, and writes `#wrath` / `#wrathMax`.
+2. The datapack's `wrath/` per-second clock reflects the meter on a shared bossbar and, while wrath is above zero, empowers hostile mobs within `WRATH_BUFF_RADIUS` of any player using removable named attribute modifiers (each mob is buffed once, then tagged `ov_buffed`).
+3. `world_event` unleashes a temporary event: the bridge clamps magnitude and duration, picks an allow-listed themed mob for any spawn surge, writes `storage overlord:event`, and runs `overlord:event/<name>`. Surges are timed, cadence-gated, and capped at `EVENT_SPAWN_CAP` concurrent `ov_surge` mobs; storms and effects expire on their own.
+4. Wrath decays one level every `WRATH_DECAY_MINUTES` of idle calm, and the bridge re-pushes fractions from the persisted level on startup. To hard-reset everything (zero the meter, strip all mob buffs, kill surge mobs, hide the bar) run `/function overlord:admin/wrath_clear`.
 
 ## Memory
 
@@ -115,12 +131,13 @@ rather than the default loop.
 3. **Revival selection.** Currently revives an arbitrary single dead player. Add a queue (oldest-death-first) or a chooser if you want deterministic order.
 4. **Demand verification.** For a `score` demand, confirm the bridge's 0.4s pause after creating `ovDemand` is enough for the statistic to populate before baselining (a player joining mid-demand can miscount). For `altar`, confirm `count_one` sums item *counts* not stacks. For `freeform`, remember it defaults to mercy if the model fails to judge.
 5. **Global shared-pain floor.** Global soul-link has no death floor, so during a Reckoning (coefficient maxed) a single creeper can cascade a group wipe. Add the optional chain-death floor if that is too punishing for your group.
+6. **Wrath buffs and surges.** Raise wrath (`set_wrath`) and confirm nearby hostiles gain the `overlord:wrath_dmg` / `overlord:wrath_hp` modifiers and that their health rescales to the new max; then confirm `/function overlord:admin/wrath_clear` strips the modifiers, kills `ov_surge` mobs, and hides the bar. Trigger a `spawn_surge` world event and confirm it respects `EVENT_SPAWN_CAP` and that the spawn positions are sane (the heuristic placement can be awkward). The buff scan is near-players-only and bounded by `WRATH_BUFF_RADIUS`; watch it on large or busy worlds.
 
 ## Upgrade paths (when the MVP proves the loop is fun)
 
 - **Transport:** 26.x ships the **Minecraft Server Management Protocol v3.0.0** (JSON-RPC). It is a cleaner push-based event channel than RCON polling and the right next step for the bridge. RCON is used here only because it is universal and zero-dependency.
 - **Skill-library promotion (Voyager pattern):** when you add a freeform-generation tool later, promote any generated intervention that validates and runs clean into the typed registry. The overlord should get *more* templated and safer the longer it runs, not more feral.
-- **More dials:** expose escalating-difficulty as overlord tools (global mob attribute buffs, threat waves) so rising pressure stays reactive instead of becoming a second always-on curve.
+- **More dials:** the wrath meter and world events already expose global mob attribute buffs and threat waves as reactive overlord tools (rising pressure stays the overlord's choice, not a second always-on curve). Extend the same way: add a `world_event` entry plus one datapack function, or register an external pack through `invoke_ritual`. Never widen a tool to take raw input as a shortcut.
 
 ## Tuning quick reference
 
@@ -138,6 +155,17 @@ rather than the default loop.
 | Demand threshold cap | `DEMAND_THRESHOLD_MAX` | 2000 |
 | Reckoning overtime (s) | `DEMAND_OVERTIME_S` | 45 |
 | Allowed demand criteria | `DEMAND_CRITERIA` | see config |
+| Wrath max level | `WRATH_MAX` | 5 |
+| Wrath mob buff fractions | `WRATH_MOB_DMG` / `WRATH_MOB_HP` | see config |
+| Wrath buff radius (near players) | `WRATH_BUFF_RADIUS` | 48 |
+| Wrath idle decay (min/level) | `WRATH_DECAY_MINUTES` | 25 |
+| Wrath shift per demand | `WRATH_ON_FAIL` / `WRATH_ON_SUCCESS` | 1 / 1 |
+| Registered world events | `WORLD_EVENTS` | spawn_surge,storm,nightfall,dread,blood_moon |
+| World event max duration (s) | `EVENT_MAX_DURATION_S` | 300 |
+| Surge concurrent cap | `EVENT_SPAWN_CAP` | 12 |
+| Surge mob allow-list | `SURGE_MOBS` | see config |
+| Group-effect allow-list | `MASS_EFFECTS` | see config |
+| External ritual allow-list | `EXTERNAL_RITUALS` | empty |
 | Chronicle fold cadence | `CHRONICLE_EVERY` | 4 |
 | State dir (events + chronicle) | `STATE_DIR` | state |
 | Effect/mob allow-lists, bounds | `bridge/.env` / `config.py` | see file |

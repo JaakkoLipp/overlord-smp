@@ -38,7 +38,11 @@ These are the spine. Do not break them without an explicit, recorded decision.
    spiralling into a death loop. Do not add a second independent escalator (a
    shrinking border, standalone mob-scaling, a tech-tree timer). New pressure
    should be expressed *through* the overlord so there is a single hand on the
-   dial.
+   dial. The **Wrath meter** is that hand made visible, not a second escalator:
+   it is set by the overlord's own tools, it falls when players appease it, and it
+   decays toward calm on its own when the overlord is idle. If you ever make wrath
+   rise on a clock the overlord does not control, you have built the second
+   escalator this invariant forbids.
 
 3. **The altar is the shared channel.** Tribute and demand deliveries both flow
    through the altar marker and the same item-scan logic. Keep new player-to-world
@@ -70,7 +74,9 @@ datapack/overlord_smp/data/overlord/function/
   tribute/                     altar item tally, credits favour, bumps seqTribute
   altar_tick                   per-altar tribute + revival logic
   demand/                      the proactive demand system (clock, phases, verify)
-  admin/                       live switches (link mode, cancel demand, place altar)
+  wrath/                       the shared wrath meter (per-second clock, mob buffs, surge)
+  event/                       one function per discrete temporary world event
+  admin/                       live switches (link mode, cancel demand, place altar, wrath_clear)
 
 bridge/
   rcon.py            zero-dependency Source RCON client with reconnect
@@ -115,6 +121,33 @@ bounded and reversible, using the soul-link coefficient as the instrument:
 The datapack owns every part of this. The bridge only sets it up and handles the
 two outcomes. The reward and punishment are each a deferred, typed `{tool, args}`
 call validated against the registry, so the safety boundary holds even on failure.
+
+### The wrath meter (the overlord's disposition, made shared and visible)
+
+Wrath is one global level (`#wrath ovGlobal`, 0..`#wrathMax`) shown to everyone on
+a bossbar. It is the overlord's mood made mechanical: while it is above zero, the
+`wrath/` per-second clock empowers hostile mobs near players (removable named
+attribute modifiers, scaled by per-level fraction tables) and reddens the bar.
+
+The split of responsibility mirrors the demand clock. The **bridge** owns the
+level-to-fraction math (in `tools.py`, fully testable and clamped): the `set_wrath`
+tool computes the mob-buff fractions and bar appearance, pushes them into
+`storage overlord:wrath`, and writes `#wrath` / `#wrathMax`. The **datapack** just
+reflects that storage. Coupling to demands lives in `overlord_bridge`: a met demand
+lowers wrath by `wrath_on_success`, a failed one raises it by `wrath_on_fail` scaled
+by `failStreak` (so a bad streak escalates the world for the whole group), and at
+peak wrath a failure erupts into a blood moon. Idle decay drops one level every
+`wrath_decay_minutes` of calm. On startup the bridge re-pushes fractions from the
+persisted `#wrath` so storage, scoreboard, and bar stay consistent across restarts.
+
+World events are the open-ended flavour channel beside the meter. `world_event`
+picks a registered event (`spawn_surge`, `storm`, `nightfall`, `dread`,
+`blood_moon`), the bridge clamps magnitude and duration and chooses an allow-listed
+themed surge mob, pushes `storage overlord:event`, and runs `overlord:event/<name>`.
+Spawn surges are timed, cadence-gated, and capped at `#surgeCap` concurrent
+`ov_surge` mobs. Everything auto-reverts; `admin/wrath_clear` is the hard reset
+(zero the meter, strip all modifiers off `ov_buffed` mobs, kill surge mobs, hide
+the bar).
 
 ## Conventions
 
@@ -166,6 +199,31 @@ have the datapack detect it, write a payload plus bump a new `seq*`, and add a
 poller in the bridge that builds memory context and calls the appropriate overlord
 entry point. Keep one channel per event class.
 
+### Add a world event
+
+The `world_event` enum is meant to grow. To add one named `meteor`:
+
+1. Add `meteor` to the `WORLD_EVENTS` config list (and `.env.example`).
+2. Create `event/meteor.mcfunction`. If it needs parameters, read them from
+   `storage overlord:event` via macros (`$(duration)`, `$(magnitude)`, etc.); the
+   tool already pushes that storage and invokes the function `with` it. Make the
+   effect temporary and self-reverting (a duration-bounded effect, a timed surge,
+   weather with a duration), so nothing has to be cleaned up by hand.
+3. If it spawns mobs, reuse the surge plumbing (`#surgeTimer` / `#surgeCadence` /
+   `#surgeCap` and `wrath/surge`) so the concurrent cap and `ov_surge` tagging
+   (and therefore `admin/wrath_clear`) apply for free. Never let the model name the
+   mob: the tool draws it from the `surge_mobs` allow-list.
+
+### Fold in an external datapack (invoke_ritual)
+
+`invoke_ritual` is the sanctioned way to expand the palette with premade packs
+without ever letting the model name a raw function. The server owner registers an
+allow-list of friendly-name to function-id pairs in `EXTERNAL_RITUALS`
+(`name=ns:path,...`). The model may only pick a registered friendly name; the
+bridge maps it to the vetted function id and runs it. An empty allow-list means the
+tool reports nothing available. Do not replace this with anything that accepts a
+function id from the model directly.
+
 ## Do not
 
 - Add a tool that takes raw command text, or that lets the model name an arbitrary
@@ -193,6 +251,17 @@ entry point. Keep one channel per event class.
   option, not yet built.
 - Freeform demands can be judged incorrectly and default to mercy if judging
   fails. This is the deliberate cost of supporting "anything".
+- The wrath buff scan plus surge spawning is the highest-performance-risk piece in
+  the build. It is bounded to hostiles within `wrath_buff_radius` of a player (a
+  near-players scan, not world-wide) and the surge is capped, but keep the radius
+  bounded and the cap low on large or busy worlds.
+- Surge spawn positioning is heuristic: a few blocks ahead of each player with a
+  basic air-here / solid-below check. It can still place mobs in awkward spots, and
+  a player looking sharply up or down skews the point.
+- Mob buffs linger. A mob is buffed once (then tagged `ov_buffed` so it is never
+  re-scanned), so dropping wrath does not weaken mobs already buffed; they keep the
+  modifier until they die or `admin/wrath_clear` strips it. A few mobs (creepers)
+  have no attack-damage attribute, so that one modifier no-ops for them.
 
 ## Roadmap (open, not yet built)
 

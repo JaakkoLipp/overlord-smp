@@ -55,6 +55,7 @@ class Bridge:
         self.chron = Chronicle(f"{cfg.state_dir}/chronicle.json")
         self.active_demand: dict | None = None
         self.last_demand_end = 0.0
+        self.last_wrath_decay = 0.0
         self.resolved_since_fold = 0
         self.seq_tribute = 0
         self.seq_demand = 0
@@ -64,8 +65,13 @@ class Bridge:
         self.rcon.connect()
         self.seq_tribute = events.read_seq(self.rcon, "seqTribute")
         self.seq_demand = events.read_seq(self.rcon, "seqDemand")
-        log.info("bridge online. tribute=%s demand=%s, %d tools, model=%s",
-                 self.seq_tribute, self.seq_demand, len(self.registry), self.cfg.llm_model)
+        # Re-push wrath fractions + bossbar from the persisted level so storage,
+        # the scoreboard, and the visible bar stay consistent after a restart.
+        self.last_wrath_decay = time.time()
+        wrath = self._set_wrath(events.get_score(self.rcon, "#wrath", "ovGlobal"))
+        log.info("bridge online. tribute=%s demand=%s wrath=%s, %d tools, model=%s",
+                 self.seq_tribute, self.seq_demand, wrath, len(self.registry),
+                 self.cfg.llm_model)
 
     def loop(self):
         while _running:
@@ -73,6 +79,7 @@ class Bridge:
                 self._poll_tribute()
                 self._poll_demand()
                 self._maybe_issue_demand()
+                self._maybe_decay_wrath()
             except Exception as exc:
                 log.exception("cycle error: %s", exc)
                 time.sleep(2.0)
@@ -141,6 +148,7 @@ class Bridge:
                     f'{{"text":"{_snbt_str(line)}","color":"light_purple","italic":true}}]')
         stake = active["reward"] if result == "met" else active["punishment"]
         self._fire_stake(stake)
+        self._wrath_after_demand(result)
         self.log.append("demand_met" if result == "met" else "demand_failed",
                         kind=active["kind"], text=active["description"])
         self._maybe_fold()
@@ -229,6 +237,61 @@ class Bridge:
         if self.resolved_since_fold >= self.cfg.chronicle_every:
             self.resolved_since_fold = 0
             self.chron.fold(self.overlord.client, self.cfg.llm_model, self.log.recent(8))
+
+    # -- wrath (the overlord's disposition, made shared + visible) ------ #
+    def _set_wrath(self, level: int) -> int:
+        """Push a clamped wrath level through the typed set_wrath tool."""
+        tool = self.registry.get("set_wrath")
+        level = max(0, min(self.cfg.wrath_max, int(level)))
+        if tool is None:
+            return level
+        try:
+            tool.run(self.rcon, tool.Params(level=level))
+        except Exception as exc:  # never let an ambient effect crash the loop
+            log.warning("wrath push failed: %s", exc)
+        return level
+
+    def _adjust_wrath(self, delta: int) -> int:
+        cur = events.get_score(self.rcon, "#wrath", "ovGlobal")
+        new = max(0, min(self.cfg.wrath_max, cur + delta))
+        if new != cur:
+            self._set_wrath(new)
+            log.info("wrath %s -> %s (%+d)", cur, new, delta)
+        return new
+
+    def _wrath_after_demand(self, result: str):
+        """A met demand soothes the overlord; a failed one stokes it, harder on a
+        failure streak. This is the one dial coupling demands to the shared mood."""
+        if result == "met":
+            self._adjust_wrath(-self.cfg.wrath_on_success)
+            return
+        streak = events.get_score(self.rcon, "#failStreak", "ovGlobal")
+        new = self._adjust_wrath(self.cfg.wrath_on_fail * max(1, streak))
+        self.last_wrath_decay = time.time()  # a fresh spike must not instantly decay
+        # At peak wrath, repeated defiance erupts into a blood moon (bounded, timed).
+        if new >= self.cfg.wrath_max and "blood_moon" in self.cfg.world_events:
+            tool = self.registry.get("world_event")
+            if tool is not None:
+                try:
+                    tool.run(self.rcon, tool.Params(
+                        event="blood_moon", magnitude=3,
+                        duration_seconds=min(180, self.cfg.event_max_duration_s)))
+                    log.info("peak wrath: blood moon unleashed")
+                except Exception as exc:
+                    log.warning("blood moon trigger failed: %s", exc)
+
+    def _maybe_decay_wrath(self):
+        """Idle self-healing: drop one wrath level every wrath_decay_minutes of calm,
+        so the world relaxes when the overlord goes quiet (mood, not ratchet)."""
+        if self.cfg.wrath_decay_minutes <= 0 or self.active_demand is not None:
+            return
+        if time.time() - self.last_wrath_decay < self.cfg.wrath_decay_minutes * 60:
+            return
+        self.last_wrath_decay = time.time()
+        cur = events.get_score(self.rcon, "#wrath", "ovGlobal")
+        if cur > 0:
+            self._set_wrath(cur - 1)
+            log.info("wrath decayed to %s (idle)", cur - 1)
 
 
 def main() -> int:

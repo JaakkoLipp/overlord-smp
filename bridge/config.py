@@ -20,6 +20,24 @@ def _csv(name: str, default: str) -> list[str]:
     return [s.strip() for s in os.getenv(name, default).split(",") if s.strip()]
 
 
+def _csv_float(name: str, default: str) -> list[float]:
+    return [float(s) for s in os.getenv(name, default).split(",") if s.strip()]
+
+
+def _kv(name: str, default: str) -> dict[str, str]:
+    """Parse `name1=val1,name2=val2` into a dict. Used for the ritual allow-list."""
+    out: dict[str, str] = {}
+    for pair in os.getenv(name, default).split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        k, v = pair.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if k and v:
+            out[k] = v
+    return out
+
+
 @dataclass
 class Config:
     # --- RCON ---
@@ -88,6 +106,44 @@ class Config:
         "minecraft.custom:minecraft.jump,"
         "minecraft.crafted:minecraft.bread",
     ))
+
+    # --- Wrath (the overlord's disposition, made shared + visible) ---
+    # Wrath is NOT a second escalator: it falls on appeasement and decays toward
+    # calm when the overlord is idle. It is the overlord's own hand on the dial,
+    # expressed as one legible, world-wide condition.
+    wrath_max: int = int(os.getenv("WRATH_MAX", "5"))
+    # Per-level mob buffs, as fractions applied via add_multiplied_base modifiers.
+    # Index = wrath level (0..wrath_max); clamped on lookup so a custom WRATH_MAX
+    # that outruns the table just reuses the last entry.
+    wrath_mob_dmg: list[float] = field(default_factory=lambda: _csv_float(
+        "WRATH_MOB_DMG", "0.0,0.1,0.2,0.35,0.5,0.75"))
+    wrath_mob_hp: list[float] = field(default_factory=lambda: _csv_float(
+        "WRATH_MOB_HP", "0.0,0.0,0.15,0.25,0.4,0.6"))
+    wrath_buff_radius: int = int(os.getenv("WRATH_BUFF_RADIUS", "48"))  # near-players scan bound
+    wrath_decay_minutes: float = float(os.getenv("WRATH_DECAY_MINUTES", "25"))
+    wrath_on_fail: int = int(os.getenv("WRATH_ON_FAIL", "1"))       # base rise per failed demand
+    wrath_on_success: int = int(os.getenv("WRATH_ON_SUCCESS", "1"))  # fall per met demand
+
+    # --- World events (the open-ended temporary-flavour channel) ---
+    # event name -> datapack function overlord:event/<name>. Adding an event is a
+    # config entry plus one function file; the enum is meant to grow.
+    world_events: list[str] = field(default_factory=lambda: _csv(
+        "WORLD_EVENTS", "spawn_surge,storm,nightfall,dread,blood_moon"))
+    event_max_duration_s: int = int(os.getenv("EVENT_MAX_DURATION_S", "300"))
+    event_spawn_cap: int = int(os.getenv("EVENT_SPAWN_CAP", "12"))   # concurrent surge mobs
+    # Themed mobs a spawn surge may draw from (allow-listed; the model never names one).
+    surge_mobs: list[str] = field(default_factory=lambda: _csv(
+        "SURGE_MOBS", "zombie,husk,skeleton,spider,creeper,phantom,pillager"))
+    # Group-wide potion effects the overlord may impose (positive or negative).
+    mass_effects: list[str] = field(default_factory=lambda: _csv(
+        "MASS_EFFECTS",
+        "regeneration,strength,resistance,speed,fire_resistance,night_vision,"
+        "weakness,slowness,mining_fatigue,hunger,poison,blindness,darkness,nausea",
+    ))
+    # External-datapack rituals: friendly name -> vetted function id. The model may
+    # only name a registered friendly name; the bridge runs the mapped function.
+    external_rituals: dict[str, str] = field(default_factory=lambda: _kv(
+        "EXTERNAL_RITUALS", ""))
 
     # --- Memory ---
     state_dir: str = os.getenv("STATE_DIR", "state")

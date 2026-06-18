@@ -16,3 +16,6 @@ execute as @e[type=marker,tag=ov_altar] at @s run function overlord:altar_tick
 
 # Demand clock (self-paced; runs its own per-second logic while a demand is active)
 execute if score #demandActive ovGlobal matches 1 run function overlord:demand/clock
+
+# Wrath clock (self-paced per-second gate; ambient mob buffs + spawn surges)
+function overlord:wrath/clock

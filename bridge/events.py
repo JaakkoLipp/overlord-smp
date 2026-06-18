@@ -89,5 +89,7 @@ def world_state(rcon: RconClient) -> dict:
         "time": rcon.command("time query daytime").strip(),
         "soullink_coefficient": get_score(rcon, "#coeff", "ovGlobal"),
         "revival_cost_levels": get_score(rcon, "#revivalXp", "ovGlobal"),
+        "wrath_level": get_score(rcon, "#wrath", "ovGlobal"),
+        "wrath_max": get_score(rcon, "#wrathMax", "ovGlobal"),
         "players": players,
     }

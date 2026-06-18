@@ -35,6 +35,25 @@ execute store result storage overlord:bridge seqTribute int 1 run scoreboard pla
 execute store result storage overlord:bridge seqDemand int 1 run scoreboard players get #seqDemand ovGlobal
 bossbar remove overlord:demand
 
+# Wrath: the overlord's disposition, made shared + visible. Persist the level across
+# reload; the bridge re-pushes fractions + bar on startup. NOT a second escalator
+# (it falls on appeasement and decays when the overlord is idle).
+scoreboard players add #wrathSec ovGlobal 0
+execute unless score #wrath ovGlobal matches -2147483648.. run scoreboard players set #wrath ovGlobal 0
+scoreboard players set #wrathMax ovGlobal 5
+scoreboard players set #surgeTimer ovGlobal 0
+scoreboard players set #surgeBeat ovGlobal 0
+scoreboard players set #surgeCadence ovGlobal 6
+execute unless score #surgeCap ovGlobal matches -2147483648.. run scoreboard players set #surgeCap ovGlobal 12
+# Defaults so the buff scan + surge have data even before the bridge pushes any.
+data modify storage overlord:wrath set value {level:0,dmg:"0",hp:"0",radius:48,color:"white",label:"Dormant"}
+data modify storage overlord:event set value {event:"none",magnitude:1,duration:0,cadence:6,cap:12,surge_mob:"zombie",weather:"thunder"}
+bossbar remove overlord:wrath
+bossbar add overlord:wrath {"text":"Wrath"}
+bossbar set overlord:wrath color white
+bossbar set overlord:wrath style notched_10
+bossbar set overlord:wrath visible false
+
 # Lethal world; deaths are handled by us, not vanilla respawn.
 gamerule naturalRegeneration false
 gamerule doImmediateRespawn true
