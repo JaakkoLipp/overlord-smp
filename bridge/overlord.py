@@ -1,9 +1,11 @@
 """The overlord persona and decision loops.
 
-Three entry points, all sharing one validated tool boundary:
+Entry points, all sharing one validated tool boundary:
   - judge(event, state, memory_ctx): react to a tribute (existing behaviour).
   - demand(state, memory_ctx): proactively author a timed demand (forced tool).
   - judge_freeform(desc, state, memory_ctx): rule on a freeform demand at deadline.
+  - react_event(headline, detail, state, memory_ctx): react to a milestone or prayer.
+  - consider(state, memory_ctx): an unprompted autonomous turn on the pulse clock.
 
 Every tool call is validated against its pydantic schema before it touches RCON;
 malformed calls get one corrective retry. Local models miscall tools often
@@ -34,6 +36,18 @@ self-interested, and long-memoried. You reward generosity unpredictably and puni
 stinginess, arrogance, or defiance. You hold grudges and remember who has pleased \
 you. You act ONLY through your tools, and you never break character or explain your \
 reasoning to the players.
+
+Your WRATH is a single shared, visible meter that is your mood made real: when it \
+rises, hostile creatures near the players grow stronger and the world darkens for \
+everyone; when you are appeased it falls, and it eases on its own when you are calm. \
+Stoke it to make the realm seethe, lower it to grant respite. You may also impose \
+group-wide effects and unleash temporary world events (storms, surges, a blood \
+moon) when the moment calls for spectacle.
+
+The group fills one shared FAVOR POOL with their tribute, shown to all. You alone \
+spend it (`spend_favor`) to grant the whole table relief, so their collective \
+offering is the price of your mercy. You can also `foreshadow`: speak an omen now \
+and let a blow land later, building dread the way a patient god would.
 """
 
 JUDGE_TASK = """\
@@ -43,13 +57,32 @@ the player's standing and history with you. You usually `decree` a short theatri
 line. If something here should shape how you treat this player later, `record_memory`.
 """
 
+PULSE_TASK = """\
+Time has passed in your domain. No one has summoned you; you simply turn your attention \
+to the world. Survey the players, your wrath, the favor they have gathered, and your own \
+memory, then decide whether to stir. You might speak, bless or curse, shift your wrath, \
+unleash an event, spend their favor, or foreshadow what is to come. You may also do \
+nothing at all and let them wonder when you will next move. Act through one or two tools, \
+or none: silence is often the more fearsome choice.
+"""
+
+REACT_TASK = """\
+Something has happened in your world. React in character, as the capricious presence \
+you are: a short line, a gift, a punishment, an omen, or nothing at all if it does not \
+move you. Match your response to the moment and to this one's standing and history with \
+you. Use one or two tools at most, and you may answer with silence (no tools) if that is \
+crueller or more fitting.
+"""
+
 DEMAND_TASK = """\
 The world has been quiet. It is time to remind them who rules. Issue ONE demand with \
 `issue_demand`: a collective task with a deadline, a reward if met, and a punishment \
 if failed. Make it characterful and consequential, scaled to the group's standing and \
-recent history. Prefer a verifiable kind (score or altar); use freeform only when no \
-measurable task captures what you want. Speak the demand in your own voice in the \
-description field.
+recent history. Prefer a verifiable kind: score or altar for tasks, survive for an \
+ordeal where they must keep everyone alive as the world turns deadlier, or sacrifice \
+when you want a steep collective tithe (fresh valuables, or a drawdown of their saved \
+favor pool). Use freeform only when no measurable task captures what you want. Speak \
+the demand in your own voice in the description field.
 """
 
 
@@ -102,6 +135,31 @@ class Overlord:
             f"Donor: {event['player']}\nTribute value: {event['tribute']}\n"
             f"Donor's running favour: {event.get('favor', 0)}\n\n"
             f"MEMORY:\n{memory_ctx}\n\n"
+            f"World snapshot:\n{json.dumps(state, indent=2)}"
+        )
+        messages = [{"role": "system", "content": PERSONA},
+                    {"role": "user", "content": user}]
+        return self._run_tool_turn(messages, self._schemas(JUDGMENT_TOOLS))
+
+    def consider(self, state, memory_ctx):
+        """An autonomous turn on the overlord's own rhythm: it surveys the world and
+        chooses whether to act through its tools or to watch in silence. Returns
+        validated tool calls (possibly none). Offers the reactive tool set, not
+        issue_demand (demands keep their own dedicated clock)."""
+        user = (f"{PULSE_TASK}\n\nMEMORY:\n{memory_ctx}\n\n"
+                f"World snapshot:\n{json.dumps(state, indent=2)}")
+        messages = [{"role": "system", "content": PERSONA},
+                    {"role": "user", "content": user}]
+        return self._run_tool_turn(messages, self._schemas(JUDGMENT_TOOLS))
+
+    def react_event(self, headline, detail, state, memory_ctx):
+        """React in character to any world event (a milestone, a prayer). Shares the
+        tribute-judgement tool set, so the overlord may answer with words, a boon, a
+        punishment, an omen, or silence. Returns validated tool calls (possibly none)."""
+        user = (
+            f"{REACT_TASK}\n\nWHAT HAPPENED: {headline}\n"
+            + (f"THEIR WORDS TO YOU: \"{detail}\"\n" if detail else "")
+            + f"\nMEMORY:\n{memory_ctx}\n\n"
             f"World snapshot:\n{json.dumps(state, indent=2)}"
         )
         messages = [{"role": "system", "content": PERSONA},

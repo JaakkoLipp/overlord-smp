@@ -15,6 +15,8 @@ Each tool exposes:
 from __future__ import annotations
 
 import logging
+import random
+import re
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, field_validator
@@ -24,9 +26,68 @@ from rcon import RconClient
 
 log = logging.getLogger("overlord.tools")
 
+_INT_RE = re.compile(r"(-?\d+)")
+
 
 def _clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
+
+
+def _read_int(rcon: RconClient, cmd: str, default: int = 0) -> int:
+    """Read a single scoreboard value over RCON (for tools that must gate on world
+    state, e.g. spending the favor pool only if it can afford the cost)."""
+    out = rcon.command(cmd)
+    if "none is set" in out.lower() or "unknown" in out.lower():
+        return default
+    m = list(_INT_RE.finditer(out))
+    return int(m[-1].group(1)) if m else default
+
+
+def _fmt(x: float) -> str:
+    # Compact decimal string, safe to substitute into a command via a datapack
+    # macro (no type suffix that the parser would reject).
+    return f"{x:.4f}".rstrip("0").rstrip(".") or "0"
+
+
+def _wrath_frac(table: list[float], level: int) -> float:
+    # Clamp the lookup so a custom WRATH_MAX that outruns the table reuses the
+    # last entry rather than throwing.
+    if not table:
+        return 0.0
+    return table[min(level, len(table) - 1)]
+
+
+_WRATH_LABELS = ["Dormant", "Stirring", "Roused", "Seething", "Furious", "Apocalyptic"]
+
+
+def _wrath_appearance(level: int, maximum: int) -> tuple[str, str]:
+    """Bossbar colour + label for a wrath level. Colours are valid bossbar colours."""
+    if level <= 0:
+        return "white", "Dormant"
+    frac = level / max(1, maximum)
+    color = "yellow" if frac < 0.34 else ("red" if frac < 0.67 else "purple")
+    label = _WRATH_LABELS[min(level, len(_WRATH_LABELS) - 1)]
+    return color, label
+
+
+def push_wrath(rcon: RconClient, cfg: Config, level: int) -> tuple[int, str]:
+    """Push a clamped wrath level into the world: fractions to storage, the level to
+    the scoreboard, and the bossbar. Shared by set_wrath, spend_favor (calm), and the
+    bridge so the level-to-fraction math lives in exactly one place."""
+    lvl = _clamp(level, 0, cfg.wrath_max)
+    dmg = _wrath_frac(cfg.wrath_mob_dmg, lvl)
+    hp = _wrath_frac(cfg.wrath_mob_hp, lvl)
+    color, label = _wrath_appearance(lvl, cfg.wrath_max)
+    snbt = ('{level:%d,dmg:"%s",hp:"%s",radius:%d,color:"%s",label:"%s"}'
+            % (lvl, _fmt(dmg), _fmt(hp), cfg.wrath_buff_radius, color, label))
+    rcon.command(f"data modify storage overlord:wrath set value {snbt}")
+    rcon.command(f"scoreboard players set #wrath ovGlobal {lvl}")
+    rcon.command(f"scoreboard players set #wrathMax ovGlobal {cfg.wrath_max}")
+    if lvl >= 1:
+        rcon.command("function overlord:wrath/show_bar")
+    else:
+        rcon.command("bossbar set overlord:wrath visible false")
+    return lvl, label
 
 
 def _sanitize_player(name: str) -> str:
@@ -212,6 +273,208 @@ class SetLinkRadius(Tool):
 
 
 # --------------------------------------------------------------------------- #
+# Wrath, mass effects, world events, external rituals (the palette expansion). #
+# Each is one more typed tool with its own clamps and allow-lists; the growth  #
+# path is more tools, never rawer access.                                      #
+# --------------------------------------------------------------------------- #
+class SetWrath(Tool):
+    name = "set_wrath"
+    description = (
+        "Set your WRATH: a shared, visible meter (0..max) that is your disposition "
+        "made mechanical. Higher wrath empowers hostile mobs near players and "
+        "darkens the world's mood bar for everyone. It is meant to fall when you "
+        "are appeased and it decays on its own when you are idle, so it is your "
+        "hand on the dial, not a runaway timer. Raise it to make the realm seethe; "
+        "lower it to grant respite."
+    )
+
+    class Params(BaseModel):
+        level: int = Field(..., description="Target wrath level; clamped to 0..max.")
+
+    def run(self, rcon, p):
+        # Fractions stored as strings so the datapack macro substitutes a clean
+        # number into the attribute command (no NBT type suffix to trip the parser).
+        lvl, label = push_wrath(rcon, self.cfg, p.level)
+        return f"wrath set to {lvl}/{self.cfg.wrath_max} ({label})"
+
+
+class MassEffect(Tool):
+    name = "mass_effect"
+    description = (
+        "Impose a status effect on ALL players at once (beneficial or harmful, your "
+        "choice from the allow-list). The per-player bless/curse remain for singling "
+        "someone out; this is the group-scale version."
+    )
+
+    class Params(BaseModel):
+        effect: str
+        seconds: int = 30
+        amplifier: int = 0
+
+    def run(self, rcon, p):
+        eff = p.effect.removeprefix("minecraft:")
+        if eff not in self.cfg.mass_effects:
+            return f"refused: '{eff}' is not in the mass-effect allow-list"
+        dur = _clamp(p.seconds, 1, self.cfg.max_duration_s)
+        amp = _clamp(p.amplifier, 0, self.cfg.max_amplifier)
+        rcon.command(f"effect give @a minecraft:{eff} {dur} {amp}")
+        return f"imposed {eff} (lvl {amp + 1}, {dur}s) on all players"
+
+
+# Spawn-surge events draw one themed mob; non-surge events ignore the field.
+_EVENT_SURGE_MOB = {"blood_moon": "zombie", "spawn_surge": ""}
+
+
+class WorldEvent(Tool):
+    name = "world_event"
+    description = (
+        "Unleash a temporary, self-reverting world event. Pick one registered event, "
+        "a magnitude (1 minor, 2 moderate, 3 major), and a duration in seconds. "
+        "Spawn surges are capped and timed; storms and effects expire on their own. "
+        "Registered events: spawn_surge, storm, nightfall, dread, blood_moon (the "
+        "exact set is server-configured)."
+    )
+
+    class Params(BaseModel):
+        event: str
+        magnitude: int = 2
+        duration_seconds: int = 120
+
+        @field_validator("event")
+        @classmethod
+        def _e(cls, v):
+            v = v.strip()
+            if not v or not all(c.isalnum() or c == "_" for c in v):
+                raise ValueError(f"invalid event name: {v!r}")
+            return v
+
+    def run(self, rcon, p):
+        ev = p.event
+        if ev not in self.cfg.world_events:
+            return (f"refused: '{ev}' is not a registered world event "
+                    f"({', '.join(self.cfg.world_events)})")
+        mag = _clamp(p.magnitude, 1, 3)
+        dur = _clamp(p.duration_seconds, 1, self.cfg.event_max_duration_s)
+        cadence = {1: 8, 2: 6, 3: 4}[mag]            # seconds between surge waves
+        cap = _clamp((self.cfg.event_spawn_cap * mag) // 3, 1, self.cfg.event_spawn_cap)
+        mob = self._surge_mob(ev)                    # always from the allow-list
+        weather = "thunder" if mag >= 2 else "rain"
+        snbt = ('{event:"%s",magnitude:%d,duration:%d,cadence:%d,cap:%d,'
+                'surge_mob:"%s",weather:"%s"}'
+                % (ev, mag, dur, cadence, cap, mob, weather))
+        rcon.command(f"data modify storage overlord:event set value {snbt}")
+        # Event functions are macros (they read $(duration) etc.), so they must be
+        # invoked with the storage source. Non-macro events ignore it harmlessly.
+        rcon.command(f"function overlord:event/{ev} with storage overlord:event")
+        return f"unleashed world event '{ev}' (magnitude {mag}, {dur}s)"
+
+    def _surge_mob(self, event: str) -> str:
+        if not self.cfg.surge_mobs:
+            return "zombie"
+        themed = _EVENT_SURGE_MOB.get(event)
+        if themed and themed in self.cfg.surge_mobs:
+            return themed
+        return random.choice(self.cfg.surge_mobs)
+
+
+class InvokeRitual(Tool):
+    name = "invoke_ritual"
+    description = (
+        "Invoke a ritual from an external datapack by its friendly name. The server "
+        "owner vets and registers these; you may only name a registered ritual, "
+        "never an arbitrary function. If none are registered, nothing happens."
+    )
+
+    class Params(BaseModel):
+        name: str = Field(..., max_length=48)
+
+        @field_validator("name")
+        @classmethod
+        def _n(cls, v):
+            if not v or not all(c.isalnum() or c in "_-" for c in v):
+                raise ValueError(f"invalid ritual name: {v!r}")
+            return v
+
+    def run(self, rcon, p):
+        rituals = self.cfg.external_rituals
+        if not rituals:
+            return "no rituals are registered on this server"
+        fid = rituals.get(p.name)
+        if not fid:
+            return (f"refused: '{p.name}' is not a registered ritual "
+                    f"({', '.join(rituals) or 'none'})")
+        rcon.command(f"function {fid}")
+        return f"invoked ritual '{p.name}' ({fid})"
+
+
+class SpendFavor(Tool):
+    name = "spend_favor"
+    description = (
+        "Spend from the communal favor pool the group has filled with tribute to "
+        "grant the WHOLE group relief. Pick a boon: 'mercy' (group regeneration), "
+        "'feast' (saturation plus brief regen), 'reprieve' (group resistance), or "
+        "'calm' (lower your own wrath by one level). Refused if the pool cannot "
+        "afford the cost. This is how their shared offering buys your mercy."
+    )
+
+    class Params(BaseModel):
+        boon: str
+
+    def run(self, rcon, p):
+        boon = p.boon.strip().lower().removeprefix("minecraft:")
+        if boon not in self.cfg.favor_boons:
+            return (f"refused: '{boon}' is not an offered boon "
+                    f"({', '.join(self.cfg.favor_boons)})")
+        cost = self.cfg.favor_spend_cost
+        pool = _read_int(rcon, "scoreboard players get #favorPool ovGlobal")
+        if pool < cost:
+            return f"refused: the favor pool holds {pool}, the boon costs {cost}"
+        rcon.command(f"scoreboard players remove #favorPool ovGlobal {cost}")
+        rcon.command("function overlord:favor/show_bar")
+        dur = _clamp(self.cfg.favor_boon_duration, 1, self.cfg.max_duration_s)
+        if boon == "mercy":
+            rcon.command(f"effect give @a minecraft:regeneration {dur} 1")
+        elif boon == "feast":
+            rcon.command(f"effect give @a minecraft:saturation {min(dur, 10)} 0")
+            rcon.command(f"effect give @a minecraft:regeneration {dur} 0")
+        elif boon == "reprieve":
+            rcon.command(f"effect give @a minecraft:resistance {dur} 1")
+        elif boon == "calm":
+            cur = _read_int(rcon, "scoreboard players get #wrath ovGlobal")
+            push_wrath(rcon, self.cfg, max(0, cur - 1))
+        rcon.command(
+            f'tellraw @a [{{"text":"[Overlord] ","color":"dark_purple","bold":true}},'
+            f'{{"text":"The realm spends its favor: {boon}.","color":"light_purple","italic":true}}]')
+        return f"spent {cost} favor on {boon} (pool now {pool - cost})"
+
+
+class Foreshadow(Tool):
+    name = "foreshadow"
+    description = (
+        "Speak an omen NOW and, optionally, schedule a single pre-validated action to "
+        "strike later, after `seconds_until`. Use this to build dread before a blow "
+        "lands ('in ten minutes, I collect what is owed'). The deferred action is one "
+        "of your other tools, named in `then` as {tool, args}; omit `then` for a pure "
+        "prophecy that only sets the mood."
+    )
+
+    class Params(BaseModel):
+        omen: str = Field(..., max_length=240,
+                          description="The omen, in your voice, shown to players now.")
+        seconds_until: int = Field(120, description="Delay before `then` fires; clamped.")
+        then: dict | None = Field(
+            None, description="Optional {tool, args} action to fire after the delay.")
+
+    def run(self, rcon, p):
+        text = p.omen.replace('"', "'")
+        rcon.command(
+            f'tellraw @a [{{"text":"\\u00a7l[An Omen] \\u00a7r","color":"dark_red","bold":true}},'
+            f'{{"text":"{text}","color":"gray","italic":true}}]')
+        rcon.command("playsound minecraft:block.bell.use master @a ~ ~ ~ 1 0.4")
+        return f"omen spoken: {text}"
+
+
+# --------------------------------------------------------------------------- #
 # Stakes: a reward/punishment is a deferred call to another (judgment) tool.   #
 # Validated structurally here; fully validated + executed at resolution time.  #
 # --------------------------------------------------------------------------- #
@@ -227,8 +490,9 @@ def _validate_stake(registry_names: set[str], stake: dict, label: str) -> dict:
     return {"tool": name, "args": args}
 
 
-# Tools that may NOT be used as a demand stake (no recursion / meta).
-_STAKE_FORBIDDEN = {"issue_demand", "record_memory"}
+# Tools that may NOT be used as a demand stake (no recursion / meta). foreshadow is
+# excluded so a demand resolution cannot schedule yet another deferred action.
+_STAKE_FORBIDDEN = {"issue_demand", "record_memory", "foreshadow"}
 
 
 class IssueDemand(Tool):
@@ -242,6 +506,13 @@ class IssueDemand(Tool):
         "id, e.g. minecraft:diamond) onto the altar.\n"
         "  kind='freeform' -> any objective you describe in words; YOU will judge "
         "whether it was satisfied when the deadline expires.\n"
+        "  kind='survive'  -> an ORDEAL: the whole group must keep everyone alive "
+        "until the deadline. Any single death fails it instantly. The world grows "
+        "steadily deadlier as the clock runs down (bonds tighten, hordes intensify).\n"
+        "  kind='sacrifice'-> the group must pay a steep tribute of `threshold` value "
+        "to be spared. source='altar' demands fresh valuables delivered to the altar "
+        "(diamonds, netherite, gold, totems, weighted by worth); source='pool' demands "
+        "they spend `threshold` from the communal favor pool they have saved.\n"
         "Provide a reward (fired if met) and a punishment (fired if failed), each as "
         "{tool, args} naming one of your other tools."
     )
@@ -249,19 +520,20 @@ class IssueDemand(Tool):
     class Params(BaseModel):
         description: str = Field(..., max_length=240,
                                  description="The demand, in your voice, shown to players.")
-        kind: str = Field(..., description="score | altar | freeform")
-        threshold: int = Field(1, description="Target count (score/altar).")
+        kind: str = Field(..., description="score | altar | freeform | survive | sacrifice")
+        threshold: int = Field(1, description="Target count/value (score/altar/sacrifice).")
         deadline_minutes: int = 10
         criterion: str | None = Field(None, description="Scoreboard criterion for kind=score.")
         item: str | None = Field(None, description="Item id for kind=altar, e.g. minecraft:diamond.")
+        source: str = Field("altar", description="For kind=sacrifice: 'altar' or 'pool'.")
         reward: dict = Field(..., description="{tool, args} fired if the demand is met.")
         punishment: dict = Field(..., description="{tool, args} fired if the demand fails.")
 
         @field_validator("kind")
         @classmethod
         def _k(cls, v):
-            if v not in ("score", "altar", "freeform"):
-                raise ValueError("kind must be score, altar, or freeform")
+            if v not in ("score", "altar", "freeform", "survive", "sacrifice"):
+                raise ValueError("kind must be score, altar, freeform, survive, or sacrifice")
             return v
 
     def __init__(self, cfg: Config, registry_names: set[str]):
@@ -276,9 +548,14 @@ class IssueDemand(Tool):
         if p.kind == "altar":
             if not p.item or not all(c.isalnum() or c in "_:" for c in p.item):
                 raise ValueError(f"invalid item id: {p.item!r}")
+        source_n = 0
+        if p.kind == "sacrifice":
+            if p.source not in ("altar", "pool"):
+                raise ValueError(f"sacrifice source must be altar or pool: {p.source!r}")
+            source_n = {"altar": 0, "pool": 1}[p.source]
         reward = _validate_stake(self._names, p.reward, "reward")
         punishment = _validate_stake(self._names, p.punishment, "punishment")
-        kind_n = {"score": 0, "altar": 1, "freeform": 2}[p.kind]
+        kind_n = {"score": 0, "altar": 1, "freeform": 2, "survive": 3, "sacrifice": 4}[p.kind]
         threshold = _clamp(p.threshold, 1, self.cfg.demand_threshold_max)
         minutes = _clamp(p.deadline_minutes, self.cfg.demand_deadline_min,
                          self.cfg.demand_deadline_max)
@@ -286,6 +563,7 @@ class IssueDemand(Tool):
             "description": p.description, "kind": p.kind, "kind_n": kind_n,
             "threshold": threshold, "seconds": minutes * 60,
             "criterion": p.criterion, "item": p.item,
+            "source": p.source, "source_n": source_n,
             "reward": reward, "punishment": punishment,
         }
 
@@ -314,7 +592,8 @@ def build_registry(cfg: Config) -> dict[str, Tool]:
     base = [
         Decree(cfg), Bless(cfg), Curse(cfg), Mercy(cfg), SummonThreat(cfg),
         TightenBonds(cfg), SetRevivalCost(cfg), SetLinkRadius(cfg),
-        RecordMemory(cfg),
+        SetWrath(cfg), MassEffect(cfg), WorldEvent(cfg), InvokeRitual(cfg),
+        SpendFavor(cfg), Foreshadow(cfg), RecordMemory(cfg),
     ]
     names = {t.name for t in base} | {"issue_demand"}
     tools = base + [IssueDemand(cfg, names)]
@@ -322,9 +601,11 @@ def build_registry(cfg: Config) -> dict[str, Tool]:
 
 
 # Tool names offered to the model when judging tribute (everything except the
-# proactive demand tool, which is only offered in demand mode).
+# proactive demand tool, which is only offered in demand mode). All of these are
+# also automatically eligible as demand stakes unless listed in _STAKE_FORBIDDEN.
 JUDGMENT_TOOLS = {
     "decree", "bless", "curse", "mercy", "summon_threat",
     "set_soullink_coefficient", "set_revival_cost", "set_soullink_radius",
-    "record_memory",
+    "set_wrath", "mass_effect", "world_event", "invoke_ritual",
+    "spend_favor", "foreshadow", "record_memory",
 }

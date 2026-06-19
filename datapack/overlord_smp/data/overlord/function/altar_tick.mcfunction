@@ -3,3 +3,5 @@
 execute if entity @e[type=item,distance=..3,nbt={Item:{id:"minecraft:totem_of_undying"}}] if entity @a[tag=ov_dead] run function overlord:revival/try
 # Tribute: a Gold Ingot acts as the commit token ("ring the bell") => tally and send to overlord.
 execute if entity @e[type=item,distance=..3,nbt={Item:{id:"minecraft:gold_ingot"}}] run function overlord:tribute/commit
+# Prayer: a written book left on the altar => copy its words out and wake the overlord.
+execute if entity @e[type=item,distance=..3,nbt={Item:{id:"minecraft:written_book"}}] run function overlord:prayer/commit
