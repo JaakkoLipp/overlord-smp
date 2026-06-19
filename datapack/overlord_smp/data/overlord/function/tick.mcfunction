@@ -19,3 +19,6 @@ execute if score #demandActive ovGlobal matches 1 run function overlord:demand/c
 
 # Wrath clock (self-paced per-second gate; ambient mob buffs + spawn surges)
 function overlord:wrath/clock
+
+# Milestone clock (self-paced per-second gate; notices diamonds, nether, sleep, dawn, idle)
+function overlord:milestone/clock

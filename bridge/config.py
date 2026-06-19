@@ -157,6 +157,11 @@ class Config:
     foreshadow_min_s: int = int(os.getenv("FORESHADOW_MIN_S", "10"))
     foreshadow_max_s: int = int(os.getenv("FORESHADOW_MAX_S", "1800"))  # 30 minutes
 
+    # --- Reactive event triggers (milestones + player prayers) ---
+    # Cooldowns so a flurry of events does not make the overlord chatty.
+    milestone_cooldown_s: int = int(os.getenv("MILESTONE_COOLDOWN_S", "45"))
+    prayer_cooldown_s: int = int(os.getenv("PRAYER_COOLDOWN_S", "12"))
+
     # --- Memory ---
     state_dir: str = os.getenv("STATE_DIR", "state")
     chronicle_every: int = int(os.getenv("CHRONICLE_EVERY", "4"))  # fold after N resolved events

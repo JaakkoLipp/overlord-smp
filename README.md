@@ -10,6 +10,7 @@ that reacts to player tribute. Built for under six players.
 - **Demands** — occasionally the overlord issues a collective, timed demand enforced by a visible bossbar countdown. Fulfilment is verified one of three ways (a vanilla scoreboard criterion summed across the group, an altar item delivery, or a freeform objective the model judges at the deadline). The clock escalates through phases and ends in a "Reckoning" overtime; success and failure each fire a typed reward or punishment tool.
 - **Wrath and world events.** The overlord's mood is a single shared, visible meter on a bossbar. While it is up, hostile mobs near players are empowered and the world darkens for everyone; a met demand soothes it, a failed one stokes it (harder on a failure streak), and it decays toward calm when the overlord is idle. It is the overlord's hand on the dial made legible, *not* a second always-rising curve. Alongside it, the overlord can impose group-wide effects and unleash temporary, self-reverting world events (spawn surges, storms, nightfall, dread, a blood moon), and can invoke owner-vetted rituals from external datapacks. Every one of these is one more typed tool with its own clamps and allow-lists.
 - **Shared fate and foreshadowing.** Beyond the basic demand kinds, the overlord can call a **survival ordeal** (keep everyone alive to the deadline; any death fails it, and the world turns massively deadlier as the clock falls), a **sacrifice** (a steep collective tithe of weighted valuables to the altar, or a drawdown of the saved favor pool), and can **foreshadow** (speak an omen now and let a pre-validated blow land minutes later). All tribute also feeds one **communal favor pool** on a shared bossbar, the literal "one number the whole group fills," which the overlord spends for group relief.
+- **The overlord notices, and answers.** Beyond tribute and demands, the overlord wakes on what happens in the world: a player's first diamond or first step into the Nether, sleeping, surviving to dawn, or standing idle too long. Players can also speak back: leave a **written book** on the altar and the overlord reads it and responds in character (a line, a gift, wrath, an omen, or pointed silence). Every reactive trigger is its own event channel, so this is the main surface for adding more agentic, nondeterministic behavior.
 - **Memory** — the overlord keeps a persistent event library (append-only on disk) plus a model-maintained chronicle, so it remembers tribute, grudges, and past demands across restarts.
 
 Everything above is a set of **dials the overlord can read and turn**: the soul-link coefficient, the revival cost, per-player buffs and curses. The four features are really one system with a god's hands on it.
@@ -103,6 +104,14 @@ deliberates" when the tribute landed.
 3. `world_event` unleashes a temporary event: the bridge clamps magnitude and duration, picks an allow-listed themed mob for any spawn surge, writes `storage overlord:event`, and runs `overlord:event/<name>`. Surges are timed, cadence-gated, and capped at `EVENT_SPAWN_CAP` concurrent `ov_surge` mobs; storms and effects expire on their own.
 4. Wrath decays one level every `WRATH_DECAY_MINUTES` of idle calm, and the bridge re-pushes fractions from the persisted level on startup. To hard-reset everything (zero the meter, strip all mob buffs, kill surge mobs, hide the bar) run `/function overlord:admin/wrath_clear`.
 
+## How the overlord reacts (milestones and prayers)
+
+1. A `milestone/` per-second detector flags a player on `ovMilestone` (first diamond via the `picked_up:diamond` stat, first Nether via `if dimension`, sleeping via a stat delta, surviving to dawn via the day/night transition, or going idle via unchanged block position) and bumps `seqMilestone`.
+2. A player who leaves a **written book** on the altar triggers `prayer/commit`, which copies the book into `storage overlord:prayer`, marks the supplicant, and bumps `seqPrayer`.
+3. The bridge polls both channels (each with its own cooldown so the overlord stays un-chatty), assembles memory context, and calls one shared `react_event` turn. The overlord answers with the normal tool set: a line, a boon, a punishment, an omen, or silence. For a prayer met with silence it still posts a brief acknowledgement so the player knows it was heard.
+
+This is the agentic surface: adding a new thing for the overlord to notice is a datapack detector that bumps a `seq*` plus a bridge poller that calls `react_event`. (Reading player text from a book over RCON is the version-fragile part; the Server Management Protocol is the clean upgrade path.)
+
 ## Memory
 
 The bridge keeps two persistent files under `bridge/state/`:
@@ -173,6 +182,9 @@ rather than the default loop.
 | Favor boon allow-list | `FAVOR_BOONS` | mercy,feast,reprieve,calm |
 | Foreshadow delay bounds (s) | `FORESHADOW_MIN_S` / `FORESHADOW_MAX_S` | 10 / 1800 |
 | Survive ordeal ramp | `demand/survive_ramp.mcfunction` | coeff 40/60/80 by phase |
+| Milestone / prayer cooldowns (s) | `MILESTONE_COOLDOWN_S` / `PRAYER_COOLDOWN_S` | 45 / 12 |
+| Idle detection threshold (s) | `#idleThreshold ovGlobal` | 180 |
+| Prayer medium | written book left on the altar | written_book |
 | Chronicle fold cadence | `CHRONICLE_EVERY` | 4 |
 | State dir (events + chronicle) | `STATE_DIR` | state |
 | Effect/mob allow-lists, bounds | `bridge/.env` / `config.py` | see file |

@@ -24,14 +24,21 @@ from tools import build_registry  # noqa: E402
 
 
 class FakeRcon:
-    """Captures every command; answers `scoreboard players get` from a score map."""
+    """Captures every command; answers `scoreboard players get`, `list`, and any
+    exact command supplied in `responses`."""
 
-    def __init__(self, scores: dict[tuple[str, str], int] | None = None):
+    def __init__(self, scores=None, players=None, responses=None):
         self.commands: list[str] = []
         self.scores = scores or {}
+        self.players = players or []
+        self.responses = responses or {}
 
     def command(self, cmd: str) -> str:
         self.commands.append(cmd)
+        if cmd in self.responses:
+            return self.responses[cmd]
+        if cmd == "list":
+            return f"There are {len(self.players)} online: {', '.join(self.players)}"
         if cmd.startswith("scoreboard players get "):
             parts = cmd.split()
             val = self.scores.get((parts[3], parts[4]), 0)
@@ -239,6 +246,12 @@ class TestStakeEligibility(unittest.TestCase):
 class _StubOverlord:
     def __init__(self, cfg, registry):
         self.client = None
+        self.react_return = []
+        self.react_calls = []
+
+    def react_event(self, headline, detail, state, memory_ctx):
+        self.react_calls.append((headline, detail))
+        return self.react_return
 
 
 def _make_bridge(scores):
@@ -417,6 +430,108 @@ class TestBridgeOmens(unittest.TestCase):
         b._fire_due_omens()
         self.assertEqual(b.pending_omens, [])
         self.assertTrue(any("[Overlord]" in c for c in b.rcon.commands))
+
+
+# --------------------------------------------------------------------------- #
+# milestones + prayers (event sensing)                                          #
+# --------------------------------------------------------------------------- #
+class TestMilestoneSensing(unittest.TestCase):
+    def test_collect_milestones_reads_and_resets(self):
+        import events
+        r = FakeRcon(players=["Alice", "Bob"],
+                     scores={("Alice", "ovMilestone"): 1, ("Bob", "ovMilestone"): 0})
+        out = events.collect_milestones(r)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["player"], "Alice")
+        self.assertEqual(out[0]["code"], 1)
+        self.assertIn("diamond", out[0]["what"])
+        self.assertTrue(r.has("scoreboard players set Alice ovMilestone 0"))
+
+    def test_milestone_codes_have_phrases(self):
+        import events
+        for code in (1, 2, 3, 4, 5):
+            self.assertIn(code, events.MILESTONES)
+
+
+class TestPrayerParsing(unittest.TestCase):
+    def _book(self, snbt):
+        return FakeRcon(responses={"data get storage overlord:prayer book": snbt})
+
+    def test_extracts_page_text(self):
+        import events
+        snbt = ('Storage overlord:prayer has the following value: '
+                '{components: {"minecraft:written_book_content": {author: "Steve", '
+                'pages: [\'{"text":"Spare us, great one"}\'], title: {raw: "Plea"}}}, '
+                'count: 1, id: "minecraft:written_book"}')
+        text = events.read_prayer_text(self._book(snbt))
+        self.assertIn("Spare us, great one", text)
+        self.assertNotIn("minecraft:written_book", text)
+
+    def test_plain_string_pages(self):
+        import events
+        snbt = ("{components: {\"minecraft:written_book_content\": "
+                "{pages: ['Bring us diamonds']}}, id: \"minecraft:written_book\"}")
+        text = events.read_prayer_text(self._book(snbt))
+        self.assertIn("Bring us diamonds", text)
+
+    def test_unreadable_book_is_graceful(self):
+        import events
+        text = events.read_prayer_text(FakeRcon())  # empty response
+        self.assertTrue(text)  # never empty
+
+    def test_collect_prayer_resets_flag(self):
+        import events
+        r = FakeRcon(players=["Carol"], scores={("Carol", "ovPrayer"): 1},
+                     responses={"data get storage overlord:prayer book":
+                                "{pages: ['mercy please']}"})
+        who, text = events.collect_prayer(r)
+        self.assertEqual(who, "Carol")
+        self.assertIn("mercy please", text)
+        self.assertTrue(r.has("scoreboard players set Carol ovPrayer 0"))
+
+
+# --------------------------------------------------------------------------- #
+# bridge: reactive polling (milestones + prayers)                               #
+# --------------------------------------------------------------------------- #
+def _bridge_with_seq(channel, value, **fake_kwargs):
+    b = _make_bridge({})
+    resp = fake_kwargs.pop("responses", {})
+    resp[f"data get storage overlord:bridge {channel}"] = (
+        f"Storage overlord:bridge has the following value at {channel}: {value}")
+    b.rcon = FakeRcon(responses=resp, **fake_kwargs)
+    return b
+
+
+class TestBridgeReactive(unittest.TestCase):
+    def test_milestone_rise_triggers_reaction(self):
+        b = _bridge_with_seq("seqMilestone", 7, players=["Alice"],
+                             scores={("Alice", "ovMilestone"): 1})
+        b.seq_milestone = 0
+        b.last_milestone_react = 0.0
+        b._poll_milestones()
+        self.assertEqual(b.seq_milestone, 7)
+        self.assertEqual(len(b.overlord.react_calls), 1)
+
+    def test_milestone_respects_cooldown(self):
+        b = _bridge_with_seq("seqMilestone", 7, players=["Alice"],
+                             scores={("Alice", "ovMilestone"): 1})
+        b.seq_milestone = 0
+        b.last_milestone_react = time.time()  # just reacted
+        b._poll_milestones()
+        self.assertEqual(b.overlord.react_calls, [])  # suppressed
+        self.assertTrue(b.rcon.has("scoreboard players set Alice ovMilestone 0"))  # still reset
+
+    def test_prayer_silence_acknowledges(self):
+        b = _bridge_with_seq("seqPrayer", 3, players=["Bob"],
+                             scores={("Bob", "ovPrayer"): 1},
+                             responses={"data get storage overlord:prayer book":
+                                        "{pages: ['help us']}"})
+        b.seq_prayer = 0
+        b.last_prayer_react = 0.0
+        b.overlord.react_return = []  # overlord chooses silence
+        b._poll_prayers()
+        self.assertEqual(len(b.overlord.react_calls), 1)
+        self.assertTrue(any("says nothing" in c for c in b.rcon.commands))
 
 
 if __name__ == "__main__":

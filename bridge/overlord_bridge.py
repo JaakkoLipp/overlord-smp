@@ -59,6 +59,10 @@ class Bridge:
         self.resolved_since_fold = 0
         self.seq_tribute = 0
         self.seq_demand = 0
+        self.seq_milestone = 0
+        self.seq_prayer = 0
+        self.last_milestone_react = 0.0
+        self.last_prayer_react = 0.0
         # Foreshadowed actions: (fire_at_epoch, {tool, args}) scheduled by the bridge.
         self.pending_omens: list[tuple[float, dict]] = []
 
@@ -67,6 +71,8 @@ class Bridge:
         self.rcon.connect()
         self.seq_tribute = events.read_seq(self.rcon, "seqTribute")
         self.seq_demand = events.read_seq(self.rcon, "seqDemand")
+        self.seq_milestone = events.read_seq(self.rcon, "seqMilestone")
+        self.seq_prayer = events.read_seq(self.rcon, "seqPrayer")
         # Re-push wrath fractions + bossbar from the persisted level so storage,
         # the scoreboard, and the visible bar stay consistent after a restart.
         self.last_wrath_decay = time.time()
@@ -83,6 +89,8 @@ class Bridge:
             try:
                 self._poll_tribute()
                 self._poll_demand()
+                self._poll_milestones()
+                self._poll_prayers()
                 self._maybe_issue_demand()
                 self._maybe_decay_wrath()
                 self._fire_due_omens()
@@ -158,6 +166,57 @@ class Bridge:
         self.log.append("demand_met" if result == "met" else "demand_failed",
                         kind=active["kind"], text=active["description"])
         self._maybe_fold()
+
+    # -- milestones (reactive: the overlord notices the world) --------- #
+    def _poll_milestones(self):
+        seq = events.read_seq(self.rcon, "seqMilestone")
+        if seq <= self.seq_milestone:
+            self.seq_milestone = seq
+            return
+        self.seq_milestone = seq
+        flagged = events.collect_milestones(self.rcon)  # always resets flags
+        if not flagged:
+            return
+        if time.time() - self.last_milestone_react < self.cfg.milestone_cooldown_s:
+            return  # drop the reaction (flags already cleared) to stay un-chatty
+        self.last_milestone_react = time.time()
+        # Batch what happened this tick into one headline; react to it as the group.
+        parts = [f"{m['player']} {m['what']}" for m in flagged]
+        headline = "; ".join(parts)
+        who = flagged[0]["player"]
+        log.info("milestone: %s", headline)
+        self.log.append("milestone", text=headline, player=who)
+        self._react_event(headline, "", who)
+
+    # -- prayers (reactive: a player speaks to the overlord) ----------- #
+    def _poll_prayers(self):
+        seq = events.read_seq(self.rcon, "seqPrayer")
+        if seq <= self.seq_prayer:
+            self.seq_prayer = seq
+            return
+        self.seq_prayer = seq
+        who, text = events.collect_prayer(self.rcon)
+        if time.time() - self.last_prayer_react < self.cfg.prayer_cooldown_s:
+            return
+        self.last_prayer_react = time.time()
+        headline = f"{who or 'A supplicant'} leaves a written prayer upon your altar"
+        log.info("prayer from %s: %s", who or "?", text)
+        self.log.append("prayer", player=who, text=text)
+        spoke = self._react_event(headline, text, who)
+        if not spoke:  # acknowledge so the supplicant knows they were heard
+            self.rcon.command('tellraw @a {"text":"[Overlord] The presence hears your '
+                              'prayer... and says nothing.","color":"dark_gray","italic":true}')
+
+    def _react_event(self, headline: str, detail: str, who: str | None) -> bool:
+        """Shared reactive turn for milestones and prayers. Returns True if the overlord
+        acted (any tool fired), False if it chose silence."""
+        state = events.world_state(self.rcon)
+        ctx = build_context(self.log, self.chron, donor=who or None)
+        actions = self.overlord.react_event(headline, detail, state, ctx)
+        if not actions:
+            return False
+        self._execute(actions, who=who or "@a")
+        return True
 
     # -- proactive demand ---------------------------------------------- #
     def _maybe_issue_demand(self):

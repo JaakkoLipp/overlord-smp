@@ -8,6 +8,15 @@ scoreboard objectives add ovFavor dummy
 scoreboard objectives add ovGlobal dummy
 scoreboard objectives add ovTmp dummy
 scoreboard objectives add ovDemandBase dummy
+# Reactive event triggers (milestones + prayers)
+scoreboard objectives add ovMilestone dummy
+scoreboard objectives add ovDiamond minecraft.picked_up:minecraft.diamond
+scoreboard objectives add ovSleep minecraft.custom:minecraft.sleep_in_bed
+scoreboard objectives add ovSleepPrev dummy
+scoreboard objectives add ovIdle dummy
+scoreboard objectives add ovPosXp dummy
+scoreboard objectives add ovPosZp dummy
+scoreboard objectives add ovPrayer dummy
 
 # Constants
 scoreboard players set #ten ovGlobal 10
@@ -33,6 +42,16 @@ scoreboard players add #seqDemand ovGlobal 0
 # Bridge event channels (mirrored to storage for the Python bridge to poll over RCON)
 execute store result storage overlord:bridge seqTribute int 1 run scoreboard players get #seqTribute ovGlobal
 execute store result storage overlord:bridge seqDemand int 1 run scoreboard players get #seqDemand ovGlobal
+
+# Reactive channels: milestones (the overlord notices the world) and prayers (players speak to it)
+scoreboard players add #seqMilestone ovGlobal 0
+scoreboard players add #seqPrayer ovGlobal 0
+scoreboard players set #mSec ovGlobal 0
+scoreboard players set #wasNight ovGlobal 0
+execute unless score #idleThreshold ovGlobal matches -2147483648.. run scoreboard players set #idleThreshold ovGlobal 180
+execute store result storage overlord:bridge seqMilestone int 1 run scoreboard players get #seqMilestone ovGlobal
+execute store result storage overlord:bridge seqPrayer int 1 run scoreboard players get #seqPrayer ovGlobal
+data modify storage overlord:prayer set value {book:{}}
 bossbar remove overlord:demand
 
 # Wrath: the overlord's disposition, made shared + visible. Persist the level across

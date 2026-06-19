@@ -78,6 +78,8 @@ datapack/overlord_smp/data/overlord/function/
   wrath/                       the shared wrath meter (per-second clock, mob buffs, surge)
   event/                       one function per discrete temporary world event
   favor/                       the communal favor-pool bossbar (shared ledger)
+  milestone/                   per-second detectors that wake the overlord (diamond, nether, sleep, dawn, idle)
+  prayer/                      a written book on the altar becomes a message to the overlord
   admin/                       live switches (link mode, cancel demand, place altar, wrath_clear)
 
 bridge/
@@ -91,19 +93,30 @@ bridge/
   state/             events.jsonl + chronicle.json (created at runtime)
 ```
 
-### The two event channels
+### The event channels
 
-The bridge polls two independent sequence numbers mirrored into
-`storage overlord:bridge`:
+The bridge polls independent sequence numbers mirrored into `storage overlord:bridge`,
+one per event class so two events in the same second cannot clobber each other. Do not
+collapse them. Each channel: the datapack writes a payload plus bumps its `seq*`; the
+bridge polls, builds memory context, and calls an overlord entry point.
 
 - `seqTribute` rises when a player commits tribute at the altar. The bridge reads
-  the donor and value, builds memory context, and calls `overlord.judge`.
-- `seqDemand` rises when an active demand resolves. The bridge reads
-  `demandResult` (`met` / `failed` / `judge`) and dispatches the staked reward or
-  punishment, or runs freeform judging first.
+  the donor and value and calls `overlord.judge`.
+- `seqDemand` rises when an active demand resolves. The bridge reads `demandResult`
+  (`met` / `failed` / `judge`) and dispatches the staked reward or punishment, or
+  runs freeform judging first.
+- `seqMilestone` rises when a per-second detector flags a player (first diamond,
+  first Nether entry, sleeping, surviving to dawn, going idle). The bridge scans the
+  `ovMilestone` codes, maps them to phrases (`events.MILESTONES`), and reacts.
+- `seqPrayer` rises when a written book is left on the altar. The bridge copies the
+  book out of `storage overlord:prayer`, extracts the text tolerantly, and reacts.
 
-Two channels rather than one so a tribute landing in the same second as a demand
-resolution cannot clobber the other event. Do not collapse them.
+Milestones and prayers both flow through one reactive entry point, `overlord.react_event`,
+which offers the same tribute-judgement tool set: the overlord may answer with a line, a
+gift, a punishment, an omen, or silence. Adding a trigger is a new datapack detector that
+bumps a `seq*` plus a bridge poller that calls `react_event` (see "Add a new event trigger").
+This is the main growth surface for agentic, non-deterministic behaviour: more of the world
+the overlord can notice and choose to act on.
 
 ### The demand lifecycle (the interesting clock)
 
@@ -320,6 +333,18 @@ function id from the model directly.
   are destroyed, not added to the pool); `source=pool` spends the saved pool on success.
 - Foreshadowed payloads live only in bridge memory, so a restart between the omen and
   its delivery drops the pending action (the spoken omen is still logged to memory).
+- Prayer reading is the most version-fragile piece: a written book is copied to
+  `storage overlord:prayer` and `events.read_prayer_text` parses the SNBT tolerantly
+  (pull quoted text, unwrap `{"text":...}`, drop `minecraft:` tokens). Book NBT paths
+  can shift between versions; if prayers come back blank, that parser is the place to
+  look, and the Server Management Protocol is the clean long-term replacement for it.
+- Milestones can be chatty. The datapack rate-limits each detector (tags for one-time
+  events, deltas for sleep, a per-day flag for dawn), and the bridge adds a
+  `milestone_cooldown_s` so a flurry (everyone sleeps at once) yields one reaction;
+  events inside the cooldown are dropped, not queued. Idle detection is heuristic
+  (block X/Z unchanged for `#idleThreshold` seconds; jumping in place still reads as
+  idle), and a lone written book on the altar is treated as a prayer, so combining a
+  book with a gold-ingot tribute makes the book count as tribute instead.
 
 ## Roadmap (open, not yet built)
 

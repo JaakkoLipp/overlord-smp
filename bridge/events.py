@@ -75,6 +75,62 @@ def collect_donors(rcon: RconClient) -> list[dict]:
     return donors
 
 
+# Milestone codes set by the datapack on ovMilestone, mapped to a human phrase the
+# overlord reacts to. Adding a milestone is a new code here plus a datapack detector.
+MILESTONES = {
+    1: "struck their first diamond",
+    2: "crossed into the Nether for the first time",
+    3: "dared to sleep in your world",
+    4: "endured the night and lived to see the dawn",
+    5: "stands idle, doing nothing in your domain",
+}
+
+
+def collect_milestones(rcon: RconClient) -> list[dict]:
+    """Players flagged with ovMilestone > 0 since the last poll. Resets them."""
+    out = []
+    for name in online_players(rcon):
+        code = get_score(rcon, name, "ovMilestone")
+        if code > 0:
+            reset_score(rcon, name, "ovMilestone", 0)
+            out.append({"player": name, "code": code,
+                        "what": MILESTONES.get(code, "did something notable")})
+    return out
+
+
+def read_prayer_text(rcon: RconClient) -> str:
+    """Best-effort extraction of a prayer's words from the written book copied into
+    `storage overlord:prayer`. NBT paths for books can shift between versions, so we
+    parse the SNBT tolerantly: pull quoted text, unwrap any JSON text component, and
+    drop structural tokens. The Server Management Protocol is the clean long-term path."""
+    out = rcon.command("data get storage overlord:prayer book")
+    pieces: list[str] = []
+    for a, b in re.findall(r"'([^']*)'|\"([^\"]*)\"", out):
+        s = (a or b).strip()
+        if not s or s.startswith("minecraft:"):
+            continue
+        if s in ("text", "raw", "filtered", "color", "bold", "italic", "underlined"):
+            continue
+        jm = re.search(r'"text"\s*:\s*"([^"]*)"', s)  # unwrap {"text":"..."}
+        if jm:
+            s = jm.group(1)
+        if s:
+            pieces.append(s)
+    text = " ".join(pieces).strip()
+    return text[:500] if text else "(an unreadable prayer)"
+
+
+def collect_prayer(rcon: RconClient) -> tuple[str, str]:
+    """The praying player (flagged ovPrayer > 0; reset) and their words."""
+    player = ""
+    for name in online_players(rcon):
+        if get_score(rcon, name, "ovPrayer") > 0:
+            reset_score(rcon, name, "ovPrayer", 0)
+            if not player:
+                player = name
+    return player, read_prayer_text(rcon)
+
+
 def world_state(rcon: RconClient) -> dict:
     """A compact snapshot the overlord sees before deciding."""
     players = []
