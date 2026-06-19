@@ -87,9 +87,9 @@ bridge/
   config.py          all bounds, allow-lists, intervals (env-driven)
   tools.py           the tool registry = the safety boundary
   events.py          RCON sensing + dual-seq polling + demand-result reader
-  overlord.py        persona + three entry points (judge / demand / judge_freeform)
+  overlord.py        persona + entry points (judge / demand / judge_freeform / react_event / consider)
   memory.py          EventLog (JSONL) + Chronicle (model-maintained summary)
-  overlord_bridge.py main loop: poll tribute, poll demand, maybe issue demand
+  overlord_bridge.py main loop: poll tribute/demand/milestone/prayer, maybe issue demand, pulse
   state/             events.jsonl + chronicle.json (created at runtime)
 ```
 
@@ -117,6 +117,19 @@ gift, a punishment, an omen, or silence. Adding a trigger is a new datapack dete
 bumps a `seq*` plus a bridge poller that calls `react_event` (see "Add a new event trigger").
 This is the main growth surface for agentic, non-deterministic behaviour: more of the world
 the overlord can notice and choose to act on.
+
+### The autonomous pulse (the overlord's own rhythm)
+
+Beyond reacting, the overlord takes an unprompted turn every `pulse_minutes` (`_maybe_pulse`
+to `overlord.consider`): it surveys world state plus memory and chooses to act through its
+reactive tools or to watch in silence. This is what makes it read as a presence with its own
+will rather than a vending machine that only responds when poked. It is deliberately NOT a
+second escalator: the pulse ratchets nothing by itself, every action is a typed tool the
+model selected, an active demand suppresses it (the demand is the overlord's current focus),
+and wrath still decays on its own. The pulse offers the reactive tool set but not
+`issue_demand` (demands keep their own dedicated clock); wiring the pulse to author demands
+at a moment of the model's choosing is a sane future step. Set `pulse_minutes` to 0 to
+disable. It costs one model call per pulse, so keep the interval sane for a local model.
 
 ### The demand lifecycle (the interesting clock)
 

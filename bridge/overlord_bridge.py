@@ -63,6 +63,7 @@ class Bridge:
         self.seq_prayer = 0
         self.last_milestone_react = 0.0
         self.last_prayer_react = 0.0
+        self.last_pulse = 0.0
         # Foreshadowed actions: (fire_at_epoch, {tool, args}) scheduled by the bridge.
         self.pending_omens: list[tuple[float, dict]] = []
 
@@ -76,6 +77,7 @@ class Bridge:
         # Re-push wrath fractions + bossbar from the persisted level so storage,
         # the scoreboard, and the visible bar stay consistent after a restart.
         self.last_wrath_decay = time.time()
+        self.last_pulse = time.time()  # first pulse is pulse_minutes after boot
         wrath = self._set_wrath(events.get_score(self.rcon, "#wrath", "ovGlobal"))
         # Keep the favor-pool bossbar scale in sync with config, then refresh it.
         self.rcon.command(f"scoreboard players set #favorMax ovGlobal {self.cfg.favor_pool_max}")
@@ -92,6 +94,7 @@ class Bridge:
                 self._poll_milestones()
                 self._poll_prayers()
                 self._maybe_issue_demand()
+                self._maybe_pulse()
                 self._maybe_decay_wrath()
                 self._fire_due_omens()
             except Exception as exc:
@@ -343,6 +346,31 @@ class Bridge:
         if self.resolved_since_fold >= self.cfg.chronicle_every:
             self.resolved_since_fold = 0
             self.chron.fold(self.overlord.client, self.cfg.llm_model, self.log.recent(8))
+
+    # -- autonomous pulse (the overlord's own rhythm) ------------------ #
+    def _maybe_pulse(self):
+        """On its own clock, give the overlord an unprompted turn to act or watch.
+        Not a second escalator: it ratchets nothing by itself, and a demand in flight
+        (its own focused moment) suppresses it."""
+        if self.cfg.pulse_minutes <= 0 or self.active_demand is not None:
+            return
+        if time.time() - self.last_pulse < self.cfg.pulse_minutes * 60:
+            return
+        if len(events.online_players(self.rcon)) < self.cfg.pulse_min_players:
+            return  # no one to rule; retry next loop without resetting the clock
+        self.last_pulse = time.time()
+        self._pulse()
+
+    def _pulse(self):
+        log.info("overlord pulse (autonomous turn)")
+        state = events.world_state(self.rcon)
+        ctx = build_context(self.log, self.chron)
+        actions = self.overlord.consider(state, ctx)
+        if not actions:
+            log.info("  -> the overlord watches in silence")
+            return
+        self.log.append("pulse", actions=len(actions))
+        self._execute(actions, who="@a")
 
     # -- wrath (the overlord's disposition, made shared + visible) ------ #
     def _set_wrath(self, level: int) -> int:

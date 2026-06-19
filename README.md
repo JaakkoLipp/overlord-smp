@@ -10,7 +10,7 @@ that reacts to player tribute. Built for under six players.
 - **Demands** — occasionally the overlord issues a collective, timed demand enforced by a visible bossbar countdown. Fulfilment is verified one of three ways (a vanilla scoreboard criterion summed across the group, an altar item delivery, or a freeform objective the model judges at the deadline). The clock escalates through phases and ends in a "Reckoning" overtime; success and failure each fire a typed reward or punishment tool.
 - **Wrath and world events.** The overlord's mood is a single shared, visible meter on a bossbar. While it is up, hostile mobs near players are empowered and the world darkens for everyone; a met demand soothes it, a failed one stokes it (harder on a failure streak), and it decays toward calm when the overlord is idle. It is the overlord's hand on the dial made legible, *not* a second always-rising curve. Alongside it, the overlord can impose group-wide effects and unleash temporary, self-reverting world events (spawn surges, storms, nightfall, dread, a blood moon), and can invoke owner-vetted rituals from external datapacks. Every one of these is one more typed tool with its own clamps and allow-lists.
 - **Shared fate and foreshadowing.** Beyond the basic demand kinds, the overlord can call a **survival ordeal** (keep everyone alive to the deadline; any death fails it, and the world turns massively deadlier as the clock falls), a **sacrifice** (a steep collective tithe of weighted valuables to the altar, or a drawdown of the saved favor pool), and can **foreshadow** (speak an omen now and let a pre-validated blow land minutes later). All tribute also feeds one **communal favor pool** on a shared bossbar, the literal "one number the whole group fills," which the overlord spends for group relief.
-- **The overlord notices, and answers.** Beyond tribute and demands, the overlord wakes on what happens in the world: a player's first diamond or first step into the Nether, sleeping, surviving to dawn, or standing idle too long. Players can also speak back: leave a **written book** on the altar and the overlord reads it and responds in character (a line, a gift, wrath, an omen, or pointed silence). Every reactive trigger is its own event channel, so this is the main surface for adding more agentic, nondeterministic behavior.
+- **The overlord notices, answers, and acts on its own.** Beyond tribute and demands, the overlord wakes on what happens in the world: a player's first diamond or first step into the Nether, sleeping, surviving to dawn, or standing idle too long. Players can also speak back: leave a **written book** on the altar and the overlord reads it and responds in character (a line, a gift, wrath, an omen, or pointed silence). And on its own rhythm (every `PULSE_MINUTES`) it takes an **autonomous turn**, surveying the world and choosing to stir or stay silent without being prompted. Every reactive trigger is its own event channel, so this is the main surface for agentic, nondeterministic behavior.
 - **Memory** — the overlord keeps a persistent event library (append-only on disk) plus a model-maintained chronicle, so it remembers tribute, grudges, and past demands across restarts.
 
 Everything above is a set of **dials the overlord can read and turn**: the soul-link coefficient, the revival cost, per-player buffs and curses. The four features are really one system with a god's hands on it.
@@ -112,6 +112,8 @@ deliberates" when the tribute landed.
 
 This is the agentic surface: adding a new thing for the overlord to notice is a datapack detector that bumps a `seq*` plus a bridge poller that calls `react_event`. (Reading player text from a book over RCON is the version-fragile part; the Server Management Protocol is the clean upgrade path.)
 
+Beyond reacting, the overlord also takes an **autonomous turn every `PULSE_MINUTES`**: it surveys world state and memory and chooses, on its own rhythm, to act through its tools (speak, bless or curse, shift wrath, unleash an event, spend favor, foreshadow) or to watch in silence. This is what makes it feel like a presence with its own will rather than something that only responds when poked. It is not a second escalator: the pulse ratchets nothing by itself, an active demand suppresses it, and wrath still decays on its own. Set `PULSE_MINUTES=0` to turn it off.
+
 ## Memory
 
 The bridge keeps two persistent files under `bridge/state/`:
@@ -185,6 +187,8 @@ rather than the default loop.
 | Milestone / prayer cooldowns (s) | `MILESTONE_COOLDOWN_S` / `PRAYER_COOLDOWN_S` | 45 / 12 |
 | Idle detection threshold (s) | `#idleThreshold ovGlobal` | 180 |
 | Prayer medium | written book left on the altar | written_book |
+| Autonomous pulse interval (min) | `PULSE_MINUTES` (0 disables) | 10 |
+| Pulse minimum players | `PULSE_MIN_PLAYERS` | 1 |
 | Chronicle fold cadence | `CHRONICLE_EVERY` | 4 |
 | State dir (events + chronicle) | `STATE_DIR` | state |
 | Effect/mob allow-lists, bounds | `bridge/.env` / `config.py` | see file |

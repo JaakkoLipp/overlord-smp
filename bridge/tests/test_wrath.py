@@ -248,10 +248,16 @@ class _StubOverlord:
         self.client = None
         self.react_return = []
         self.react_calls = []
+        self.consider_return = []
+        self.consider_calls = 0
 
     def react_event(self, headline, detail, state, memory_ctx):
         self.react_calls.append((headline, detail))
         return self.react_return
+
+    def consider(self, state, memory_ctx):
+        self.consider_calls += 1
+        return self.consider_return
 
 
 def _make_bridge(scores):
@@ -532,6 +538,62 @@ class TestBridgeReactive(unittest.TestCase):
         b._poll_prayers()
         self.assertEqual(len(b.overlord.react_calls), 1)
         self.assertTrue(any("says nothing" in c for c in b.rcon.commands))
+
+
+# --------------------------------------------------------------------------- #
+# bridge: autonomous pulse                                                      #
+# --------------------------------------------------------------------------- #
+class TestBridgePulse(unittest.TestCase):
+    def _bridge(self, players):
+        b = _make_bridge({})
+        b.rcon = FakeRcon(players=players)
+        b.cfg.pulse_minutes = 10
+        b.cfg.pulse_min_players = 1
+        b.active_demand = None
+        b.last_pulse = 0.0  # long ago -> due
+        return b
+
+    def test_fires_when_due(self):
+        b = self._bridge(["Alice"])
+        b._maybe_pulse()
+        self.assertEqual(b.overlord.consider_calls, 1)
+        self.assertGreater(b.last_pulse, 0.0)  # clock reset
+
+    def test_skips_during_active_demand(self):
+        b = self._bridge(["Alice"])
+        b.active_demand = {"kind": "score"}
+        b._maybe_pulse()
+        self.assertEqual(b.overlord.consider_calls, 0)
+
+    def test_skips_when_not_due(self):
+        b = self._bridge(["Alice"])
+        b.last_pulse = time.time()
+        b._maybe_pulse()
+        self.assertEqual(b.overlord.consider_calls, 0)
+
+    def test_skips_empty_server(self):
+        b = self._bridge([])
+        b._maybe_pulse()
+        self.assertEqual(b.overlord.consider_calls, 0)
+
+    def test_disabled_when_zero(self):
+        b = self._bridge(["Alice"])
+        b.cfg.pulse_minutes = 0
+        b._maybe_pulse()
+        self.assertEqual(b.overlord.consider_calls, 0)
+
+    def test_executes_chosen_action(self):
+        b = self._bridge(["Alice"])
+        dec = build_registry(b.cfg)["decree"]
+        b.overlord.consider_return = [("decree", dec.Params(message="kneel"))]
+        b._maybe_pulse()
+        self.assertTrue(b.rcon.has("tellraw"))
+
+    def test_silence_does_nothing(self):
+        b = self._bridge(["Alice"])
+        b.overlord.consider_return = []
+        b._maybe_pulse()
+        self.assertFalse(b.rcon.has("tellraw"))
 
 
 if __name__ == "__main__":

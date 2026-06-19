@@ -162,6 +162,14 @@ class Config:
     milestone_cooldown_s: int = int(os.getenv("MILESTONE_COOLDOWN_S", "45"))
     prayer_cooldown_s: int = int(os.getenv("PRAYER_COOLDOWN_S", "12"))
 
+    # --- Autonomous pulse (the overlord's own rhythm: it surveys and may act) ---
+    # Every pulse_minutes the overlord gets a turn to act unprompted (or to watch in
+    # silence). It is NOT a second escalator: it ratchets nothing by itself, every
+    # action is a typed tool the model chose, and wrath still decays on its own.
+    # Set pulse_minutes to 0 to disable.
+    pulse_minutes: float = float(os.getenv("PULSE_MINUTES", "10"))
+    pulse_min_players: int = int(os.getenv("PULSE_MIN_PLAYERS", "1"))
+
     # --- Memory ---
     state_dir: str = os.getenv("STATE_DIR", "state")
     chronicle_every: int = int(os.getenv("CHRONICLE_EVERY", "4"))  # fold after N resolved events

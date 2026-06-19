@@ -1,9 +1,11 @@
 """The overlord persona and decision loops.
 
-Three entry points, all sharing one validated tool boundary:
+Entry points, all sharing one validated tool boundary:
   - judge(event, state, memory_ctx): react to a tribute (existing behaviour).
   - demand(state, memory_ctx): proactively author a timed demand (forced tool).
   - judge_freeform(desc, state, memory_ctx): rule on a freeform demand at deadline.
+  - react_event(headline, detail, state, memory_ctx): react to a milestone or prayer.
+  - consider(state, memory_ctx): an unprompted autonomous turn on the pulse clock.
 
 Every tool call is validated against its pydantic schema before it touches RCON;
 malformed calls get one corrective retry. Local models miscall tools often
@@ -53,6 +55,15 @@ A tribute has been laid upon your altar. Pass judgement and act through your too
 (usually one to three). Match the magnitude of your response to the tribute and to \
 the player's standing and history with you. You usually `decree` a short theatrical \
 line. If something here should shape how you treat this player later, `record_memory`.
+"""
+
+PULSE_TASK = """\
+Time has passed in your domain. No one has summoned you; you simply turn your attention \
+to the world. Survey the players, your wrath, the favor they have gathered, and your own \
+memory, then decide whether to stir. You might speak, bless or curse, shift your wrath, \
+unleash an event, spend their favor, or foreshadow what is to come. You may also do \
+nothing at all and let them wonder when you will next move. Act through one or two tools, \
+or none: silence is often the more fearsome choice.
 """
 
 REACT_TASK = """\
@@ -126,6 +137,17 @@ class Overlord:
             f"MEMORY:\n{memory_ctx}\n\n"
             f"World snapshot:\n{json.dumps(state, indent=2)}"
         )
+        messages = [{"role": "system", "content": PERSONA},
+                    {"role": "user", "content": user}]
+        return self._run_tool_turn(messages, self._schemas(JUDGMENT_TOOLS))
+
+    def consider(self, state, memory_ctx):
+        """An autonomous turn on the overlord's own rhythm: it surveys the world and
+        chooses whether to act through its tools or to watch in silence. Returns
+        validated tool calls (possibly none). Offers the reactive tool set, not
+        issue_demand (demands keep their own dedicated clock)."""
+        user = (f"{PULSE_TASK}\n\nMEMORY:\n{memory_ctx}\n\n"
+                f"World snapshot:\n{json.dumps(state, indent=2)}")
         messages = [{"role": "system", "content": PERSONA},
                     {"role": "user", "content": user}]
         return self._run_tool_turn(messages, self._schemas(JUDGMENT_TOOLS))
