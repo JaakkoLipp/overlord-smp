@@ -33,28 +33,31 @@ server build and model, so treat the pre-flight below as required before players
    `bridge online ... N tools, model=...`.
 3. Consecrate an altar (`/function overlord:admin/altar`), drop a gold-ingot tribute, and
    confirm the overlord reacts end to end (proves the full RCON to model to RCON loop).
-4. **Tune soul-link before the first real fight (most important).** At the default
-   `global` mode with `#coeff 30`, integer rounding makes typical combat damage (one to
-   three hearts) split among the group round down to **zero shared damage**, so the
-   headline mechanic reads as "nothing happens." Raise the coefficient
-   (`/scoreboard players set #coeff ovGlobal 60` or higher) and/or switch to `proximity`
-   so the bond actually registers. Counter-tune: at high coefficient, global mode has
-   **no death floor**, so one large hit can chain-wipe the group. The usable band is
-   narrow; `proximity` (spreading out lowers shared pain) is the safest mode for a new
-   group.
+4. **Sanity-check soul-link before the first real fight.** Soul-link now delivers each
+   recipient's share as **fractional HP** and enforces a **chain-death floor**
+   (`#linkFloor`, default one heart), so the old failure modes are fixed: it no longer
+   reads as "nothing happens" at the default `#coeff 30`, and a single big hit can no
+   longer cascade into a group wipe. Confirm in-game that a small hit bleeds a fraction
+   to the group and that one large hit leaves everyone at >= 1 heart. `#coeff` still tunes
+   intensity (raise it for harder shared pain); `proximity` mode (spreading out lowers
+   shared pain) is still the gentlest topology. To restore the old lethal-link behaviour
+   for a brutal ordeal, set `#linkFloor 0`.
 5. Decide your model-outage policy. A freeform demand judged during an LLM failure
    defaults to mercy (it fires the reward); plan for the gateway's uptime if that matters.
 
-**Functional gaps surfaced in review (none block loading; tune or accept):**
+**Fixed in this release (were the top first-session issues):**
 
-- **Soul-link tuning band** (above) is the single biggest gameplay risk: silent at the
-  default tuning, cascade-wipe at high tuning. Tune deliberately.
-- **Tribute value is quantity-blind.** The altar tally counts dropped *stacks* (item
-  entities), not the total item count, so 64 gold in one stack scores the same as one.
-  Spread offerings, or adjust `tribute/commit` if the favor economy matters to you.
-- **Sacrifice `source=pool`** measures the standing favor pool with no fresh baseline, so
-  a demand whose threshold is at or below the current pool succeeds on the first tick.
-  Prefer `source=altar`, or keep pool thresholds above the live pool.
+- **Soul-link no longer silent or wipe-prone.** Fractional-HP delivery means typical
+  combat damage actually bleeds at the default `#coeff 30`, and the new `#linkFloor`
+  (default one heart) stops a single hit from chain-wiping the group.
+- **Tribute is now quantity-aware.** The altar tally sums real stack counts, so 64 gold
+  is worth 64, not 1; diamonds and netherite keep their per-item weighting.
+- **Sacrifice `source=pool` requires fresh contribution.** It snapshots the pool when the
+  demand begins and measures only favor added since, so a threshold at or below the
+  standing pool no longer wins on the first tick.
+
+**Remaining functional gaps (none block loading; tune or accept):**
+
 - **Freeform demand bossbar** shows a static "0 / threshold" the whole time (freeform has
   no progress counter); it is cosmetic, not a measurement.
 - **The surge concurrent cap is soft.** It is checked per player before spawning, so a
@@ -136,7 +139,7 @@ python -m pytest bridge/tests        # or: python -m unittest discover bridge/te
 ## How a tribute flows
 
 1. A player drops items near the altar, then drops a **gold ingot** as the commit token ("ring the bell").
-2. The datapack tallies tribute (stack count, with diamonds x3 and netherite x10), credits the donor's `ovFavor`, clears the offering, and bumps `storage overlord:bridge seqTribute`.
+2. The datapack tallies tribute (summed item counts, with diamonds and netherite weighted higher per item), credits the donor's `ovFavor`, clears the offering, and bumps `storage overlord:bridge seqTribute`.
 3. The bridge polls that seq over RCON, finds the donor by their `ovTribute` score, snapshots the world, and asks the overlord.
 4. The overlord returns one to three typed tool calls. Each is validated and clamped, then executed over RCON.
 
@@ -192,13 +195,13 @@ rather than the default loop.
 
 ## Test this first (highest-variance pieces)
 
-1. **Soul-link distribution.** Switch to your chosen mode, have one player take fall/mob damage, and confirm the others take roughly `coefficient%` of it *in total* (split among recipients), with **no ping-pong** (the magic-damage bleed must not re-bleed). The anti-feedback compensation in `soullink/dist_apply.mcfunction` (and `apply.mcfunction` for pairs) pre-advances each recipient's baseline; if you see oscillation, that is the code to inspect. In proximity mode, confirm that spreading out past the radius drops a player from the link. Note the MVP works at integer-HP granularity (sub-half-heart bleed is dropped), which is most visible with small hits or large groups; move to macro-passed decimals if you want finer resolution.
+1. **Soul-link distribution.** Switch to your chosen mode, have one player take fall/mob damage, and confirm the others take roughly `coefficient%` of it *in total* (split among recipients), with **no ping-pong** (the magic-damage bleed must not re-bleed). The anti-feedback compensation in `soullink/dist_apply.mcfunction` (and `apply.mcfunction` for pairs) pre-advances each recipient's baseline; if you see oscillation, that is the code to inspect. In proximity mode, confirm that spreading out past the radius drops a player from the link. Bleed is now delivered as fractional HP (the `soullink/recv` -> `recv_dmg` path keeps tenths-of-HP precision), so sub-1HP shares are no longer dropped the way the old integer-HP MVP dropped them.
 2. **Altar attribution.** Tribute is credited to the *nearest* player within 12 blocks. With several players clustered on the altar this can misattribute; widen or tighten the radius, or gate on a per-player commit, if it matters for your group.
 3. **Revival selection.** Currently revives an arbitrary single dead player. Add a queue (oldest-death-first) or a chooser if you want deterministic order.
 4. **Demand verification.** For a `score` demand, confirm the bridge's 0.4s pause after creating `ovDemand` is enough for the statistic to populate before baselining (a player joining mid-demand can miscount). For `altar`, confirm `count_one` sums item *counts* not stacks. For `freeform`, remember it defaults to mercy if the model fails to judge.
-5. **Global shared-pain floor.** Global soul-link has no death floor, so during a Reckoning (coefficient maxed) a single creeper can cascade a group wipe. Add the optional chain-death floor if that is too punishing for your group.
+5. **Chain-death floor.** Soul-link clamps each bleed to the headroom above `#linkFloor ovGlobal` (default 20 = one heart), so during a Reckoning (coefficient maxed) a single creeper can no longer cascade a group wipe. Confirm one big hit leaves everyone at >= 1 heart. Set `#linkFloor 0` to restore the old floorless behaviour if that is the stakes you want.
 6. **Wrath buffs and surges.** Raise wrath (`set_wrath`) and confirm nearby hostiles gain the `overlord:wrath_dmg` / `overlord:wrath_hp` modifiers and that their health rescales to the new max; then confirm `/function overlord:admin/wrath_clear` strips the modifiers, kills `ov_surge` mobs, and hides the bar. Trigger a `spawn_surge` world event and confirm it respects `EVENT_SPAWN_CAP` and that the spawn positions are sane (the heuristic placement can be awkward). The buff scan is near-players-only and bounded by `WRATH_BUFF_RADIUS`; watch it on large or busy worlds.
-7. **Survival ordeal and sacrifice.** Issue a `survive` demand and confirm the vitals bar appears, the coefficient and surges ramp by phase, a single death fails it instantly, and reaching the deadline alive wins. For `sacrifice`, confirm `source=altar` consumes weighted valuables into progress (rarer items count for more) and `source=pool` reads and then spends the favor pool on success. Confirm tribute raises the `overlord:favor` bar and that `spend_favor` refuses when the pool cannot afford the cost. Note the ordeal is tuned brutal at the end (coefficient 80 in global soul-link has no death floor); soften it in `demand/survive_ramp` if it is too punishing for your group.
+7. **Survival ordeal and sacrifice.** Issue a `survive` demand and confirm the vitals bar appears, the coefficient and surges ramp by phase, a single death fails it instantly, and reaching the deadline alive wins. For `sacrifice`, confirm `source=altar` consumes weighted valuables into progress (rarer items count for more) and `source=pool` requires fresh favor added since the demand began (it snapshots the pool at start), then spends `threshold` on success. Confirm tribute raises the `overlord:favor` bar and that `spend_favor` refuses when the pool cannot afford the cost. Note the ordeal is still hard at the end (coefficient 80), though the `#linkFloor` now prevents a single hit from instant-wiping; set `#linkFloor 0` during the ordeal or soften `demand/survive_ramp` to taste.
 
 ## Upgrade paths (when the MVP proves the loop is fun)
 
@@ -213,6 +216,7 @@ rather than the default loop.
 | Soul-link mode (0/1/2) | `#linkMode ovGlobal` (or `admin/link_*`) | 1 (global) |
 | Soul-link bleed % | `#coeff ovGlobal` (or `set_soullink_coefficient` tool) | 30 |
 | Proximity radius (blocks) | `#linkRadius ovGlobal` (or `set_soullink_radius` tool) | 16 |
+| Chain-death floor (0.1 HP; 0 = off) | `#linkFloor ovGlobal` | 20 (one heart) |
 | Revival cost (levels) | `#revivalXp ovGlobal` (or `set_revival_cost` tool) | 30 |
 | Tribute commit token | `tribute/commit.mcfunction` (gold ingot) | gold_ingot |
 | Demand frequency (mean min) | `DEMAND_MEAN_MINUTES` | 60 |
