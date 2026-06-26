@@ -31,6 +31,10 @@ execute unless score #revivalXp ovGlobal matches -2147483648.. run scoreboard pl
 # Soul-link topology: 0 = bonded pairs, 1 = global (all players), 2 = proximity (within radius)
 execute unless score #linkMode ovGlobal matches -2147483648.. run scoreboard players set #linkMode ovGlobal 1
 execute unless score #linkRadius ovGlobal matches -2147483648.. run scoreboard players set #linkRadius ovGlobal 16
+# Chain-death floor (0.1 HP): soul-link damage may never drop a recipient below this, so
+# one big hit can no longer cascade into a group wipe. Default 20 = one heart. Set to 0
+# to restore the old floorless behaviour (e.g. for a deliberately brutal survive ordeal).
+execute unless score #linkFloor ovGlobal matches -2147483648.. run scoreboard players set #linkFloor ovGlobal 20
 # Demand state
 scoreboard players set #demandActive ovGlobal 0
 scoreboard players set #demandPhase ovGlobal 0
@@ -77,6 +81,8 @@ bossbar set overlord:wrath visible false
 # overlord spends for relief. Persist the pool across reload; the bridge re-syncs the
 # scale on startup. Always visible: it is the shared common-goal number.
 execute unless score #favorPool ovGlobal matches -2147483648.. run scoreboard players set #favorPool ovGlobal 0
+# Baseline for pool-source sacrifices (snapshot of the pool when such a demand begins).
+scoreboard players set #favorPoolBase ovGlobal 0
 scoreboard players set #favorMax ovGlobal 1000
 # Monotonic death tally (survive ordeals baseline against it) and survive scratch.
 scoreboard players add #deathTally ovGlobal 0

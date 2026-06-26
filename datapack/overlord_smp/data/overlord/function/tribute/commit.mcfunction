@@ -1,13 +1,12 @@
-# context: @s = altar marker. Tribute = stack count + weighted valuables.
+# context: @s = altar marker. Tribute = total item COUNT + weighted valuables, summed
+# over real stack quantities (not one point per dropped stack).
 scoreboard players set #trib ovTmp 0
-execute store result score #n ovTmp if entity @e[type=item,distance=..3]
-scoreboard players operation #trib ovTmp += #n ovTmp
-execute store result score #v ovTmp if entity @e[type=item,distance=..3,nbt={Item:{id:"minecraft:diamond"}}]
-scoreboard players operation #v ovTmp *= #three ovGlobal
-scoreboard players operation #trib ovTmp += #v ovTmp
-execute store result score #v ovTmp if entity @e[type=item,distance=..3,nbt={Item:{id:"minecraft:netherite_ingot"}}]
-scoreboard players operation #v ovTmp *= #ten ovGlobal
-scoreboard players operation #trib ovTmp += #v ovTmp
+execute as @e[type=item,distance=..3] run function overlord:tribute/tally_one
+# Weighted bonuses, added on top per item: diamonds +3 each, netherite +10 each.
+scoreboard players set #tribW ovTmp 3
+execute as @e[type=item,distance=..3,nbt={Item:{id:"minecraft:diamond"}}] run function overlord:tribute/tally_bonus
+scoreboard players set #tribW ovTmp 10
+execute as @e[type=item,distance=..3,nbt={Item:{id:"minecraft:netherite_ingot"}}] run function overlord:tribute/tally_bonus
 # Award to nearest player (the donor). ovTribute is consumed by the bridge; ovFavor is the running ledger.
 execute as @p[distance=..12] run scoreboard players operation @s ovTribute += #trib ovTmp
 execute as @p[distance=..12] run scoreboard players operation @s ovFavor += #trib ovTmp
