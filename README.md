@@ -7,13 +7,67 @@ that reacts to player tribute. Built for under six players.
 - **Soul-link (three modes)** — a configurable percentage of damage one player takes bleeds to other linked players. Switchable topology: **pairs** (bonded two-by-two), **global** (everyone shares), or **proximity** (only players within a radius). In global/proximity the coefficient is the *total* bled, split evenly among recipients, so total shared damage stays bounded regardless of group size. Individual death is preserved, so it composes with revival.
 - **Permadeath + revival** — death sends you to spectator; the living buy you back at the altar with a Totem of Undying plus XP levels.
 - **The Overlord** — an LLM that reads world state and a player's tribute, then acts through a fixed set of typed, validated tools. It both *reacts* to tribute and *proactively issues timed demands*. It is the *only* escalating pressure; the three survival systems are flat. (One escalator, by design, so the difficulty multiplies controllably instead of spiralling.)
-- **Demands** — occasionally the overlord issues a collective, timed demand enforced by a visible bossbar countdown. Fulfilment is verified one of three ways (a vanilla scoreboard criterion summed across the group, an altar item delivery, or a freeform objective the model judges at the deadline). The clock escalates through phases and ends in a "Reckoning" overtime; success and failure each fire a typed reward or punishment tool.
+- **Demands** — occasionally the overlord issues a collective, timed demand enforced by a visible bossbar countdown. Fulfilment is verified one of five ways (a vanilla scoreboard criterion summed across the group, an altar item delivery, a freeform objective the model judges at the deadline, a survival ordeal, or a collective sacrifice). The clock escalates through phases and ends in a "Reckoning" overtime; success and failure each fire a typed reward or punishment tool.
 - **Wrath and world events.** The overlord's mood is a single shared, visible meter on a bossbar. While it is up, hostile mobs near players are empowered and the world darkens for everyone; a met demand soothes it, a failed one stokes it (harder on a failure streak), and it decays toward calm when the overlord is idle. It is the overlord's hand on the dial made legible, *not* a second always-rising curve. Alongside it, the overlord can impose group-wide effects and unleash temporary, self-reverting world events (spawn surges, storms, nightfall, dread, a blood moon), and can invoke owner-vetted rituals from external datapacks. Every one of these is one more typed tool with its own clamps and allow-lists.
 - **Shared fate and foreshadowing.** Beyond the basic demand kinds, the overlord can call a **survival ordeal** (keep everyone alive to the deadline; any death fails it, and the world turns massively deadlier as the clock falls), a **sacrifice** (a steep collective tithe of weighted valuables to the altar, or a drawdown of the saved favor pool), and can **foreshadow** (speak an omen now and let a pre-validated blow land minutes later). All tribute also feeds one **communal favor pool** on a shared bossbar, the literal "one number the whole group fills," which the overlord spends for group relief.
 - **The overlord notices, answers, and acts on its own.** Beyond tribute and demands, the overlord wakes on what happens in the world: a player's first diamond or first step into the Nether, sleeping, surviving to dawn, or standing idle too long. Players can also speak back: leave a **written book** on the altar and the overlord reads it and responds in character (a line, a gift, wrath, an omen, or pointed silence). And on its own rhythm (every `PULSE_MINUTES`) it takes an **autonomous turn**, surveying the world and choosing to stir or stay silent without being prompted. Every reactive trigger is its own event channel, so this is the main surface for agentic, nondeterministic behavior.
 - **Memory** — the overlord keeps a persistent event library (append-only on disk) plus a model-maintained chronicle, so it remembers tribute, grudges, and past demands across restarts.
 
 Everything above is a set of **dials the overlord can read and turn**: the soul-link coefficient, the revival cost, per-player buffs and curses. The four features are really one system with a god's hands on it.
+
+---
+
+## Deployment readiness (current status)
+
+Status: **code-complete and internally consistent.** Every datapack function reference
+resolves, the bridge byte-compiles on Python 3.11, the typed-tool unit tests pass, and
+the load-bearing invariants (one escalator; the model never emits a raw command) hold
+across every subsystem. What the repo cannot self-certify is live behavior on your exact
+server build and model, so treat the pre-flight below as required before players join.
+
+**Pre-flight (do all five before opening to players):**
+
+1. Load the pack on a private copy, `/reload`, and confirm zero command errors plus the
+   "Systems online" line.
+2. Start the bridge against that server with your LLM gateway up; confirm the log prints
+   `bridge online ... N tools, model=...`.
+3. Consecrate an altar (`/function overlord:admin/altar`), drop a gold-ingot tribute, and
+   confirm the overlord reacts end to end (proves the full RCON to model to RCON loop).
+4. **Tune soul-link before the first real fight (most important).** At the default
+   `global` mode with `#coeff 30`, integer rounding makes typical combat damage (one to
+   three hearts) split among the group round down to **zero shared damage**, so the
+   headline mechanic reads as "nothing happens." Raise the coefficient
+   (`/scoreboard players set #coeff ovGlobal 60` or higher) and/or switch to `proximity`
+   so the bond actually registers. Counter-tune: at high coefficient, global mode has
+   **no death floor**, so one large hit can chain-wipe the group. The usable band is
+   narrow; `proximity` (spreading out lowers shared pain) is the safest mode for a new
+   group.
+5. Decide your model-outage policy. A freeform demand judged during an LLM failure
+   defaults to mercy (it fires the reward); plan for the gateway's uptime if that matters.
+
+**Functional gaps surfaced in review (none block loading; tune or accept):**
+
+- **Soul-link tuning band** (above) is the single biggest gameplay risk: silent at the
+  default tuning, cascade-wipe at high tuning. Tune deliberately.
+- **Tribute value is quantity-blind.** The altar tally counts dropped *stacks* (item
+  entities), not the total item count, so 64 gold in one stack scores the same as one.
+  Spread offerings, or adjust `tribute/commit` if the favor economy matters to you.
+- **Sacrifice `source=pool`** measures the standing favor pool with no fresh baseline, so
+  a demand whose threshold is at or below the current pool succeeds on the first tick.
+  Prefer `source=altar`, or keep pool thresholds above the live pool.
+- **Freeform demand bossbar** shows a static "0 / threshold" the whole time (freeform has
+  no progress counter); it is cosmetic, not a measurement.
+- **The surge concurrent cap is soft.** It is checked per player before spawning, so a
+  multi-player wave can overshoot `EVENT_SPAWN_CAP` by up to (players minus one). Bounded
+  and self-correcting for a sub-six group.
+- **`nightfall` / `blood_moon`** set night and rely on the natural day cycle to revert;
+  with `doDaylightCycle false` night will not clear on its own.
+- **Decree / foreshadow omen text** strips quotes but not backslashes or newlines before
+  building the `tellraw`; a model that emits those produces a malformed line. Low risk
+  with a trusted local model, but the one place to harden the text-to-command path.
+- Already-documented edges still apply (arbitrary revival target, altar attribution
+  within 12 blocks, score-baseline mid-join miscount, wrath buff-once not tracking the
+  live meter). See "Test this first" for how to check each.
 
 ---
 
