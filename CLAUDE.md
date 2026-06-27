@@ -311,16 +311,20 @@ function id from the model directly.
 ## Known sharp edges (carry these forward)
 
 - Soul-link distribution is the highest-variance subsystem. Test every mode for
-  damage ping-pong. It runs at integer-HP granularity, so tiny chip damage rounds
-  to zero, worse with larger groups.
+  damage ping-pong. It now delivers the per-recipient share as fractional HP (the
+  `soullink/recv` -> `recv_dmg` path keeps tenths-of-HP precision and deals a decimal
+  via macro), so sub-1HP bleed is no longer floored to zero the way the old
+  integer-HP MVP did. The anti-feedback baseline advance happens per recipient inside
+  `recv`, by the ACTUAL clamped amount dealt.
 - Altar attribution credits the nearest player within range, so a tight cluster
   can misattribute tribute.
 - Revival currently returns an arbitrary dead player (no queue).
 - Score demands baseline per-player stats shortly after creating the objective; a
   player who joins mid-demand can miscount.
-- Global soul-link has no death floor, so one creeper can cascade a group wipe.
-  A chain-death floor (link cannot take a recipient below one heart) is a planned
-  option, not yet built.
+- Soul-link now has a chain-death floor: `recv` clamps each bleed to the headroom
+  above `#linkFloor ovGlobal` (default 20 = one heart), so a single big hit can no
+  longer cascade into a full group wipe. Set `#linkFloor` to 0 to restore the old
+  floorless behaviour (e.g. for a deliberately lethal survive ordeal).
 - Freeform demands can be judged incorrectly and default to mercy if judging
   fails. This is the deliberate cost of supporting "anything".
 - The wrath buff scan plus surge spawning is the highest-performance-risk piece in
@@ -335,15 +339,20 @@ function id from the model directly.
   modifier until they die or `admin/wrath_clear` strips it. A few mobs (creepers)
   have no attack-damage attribute, so that one modifier no-ops for them.
 - The survive ordeal is deliberately brutal at the end: the coefficient reaches 80
-  in the last quarter, and in global soul-link (the default) there is no death floor,
-  so a single hard hit can chain-wipe and fail the ordeal. That is the intended stakes,
-  but it is the knob to soften (lower the phase values in `demand/survive_ramp`, or run
-  proximity link so spreading out helps). Death detection has up to one second of
-  latency (the per-second clock), which is fine as theatre.
+  in the last quarter. With the new `#linkFloor` (default one heart) a single hit no
+  longer instant-wipes the group, but stacked bleed plus the surge hordes still make
+  the finish lethal. To restore the old razor-edge ordeal, set `#linkFloor 0` (during
+  the ordeal) so link damage can kill outright again; other knobs are the phase values
+  in `demand/survive_ramp` and running proximity link so spreading out helps. Death
+  detection has up to one second of latency (the per-second clock), which is fine as
+  theatre.
 - The favor bossbar is always visible (it is the shared goal). With the wrath and
   demand bars that can be three bars at once on a busy moment; acceptable for a small
   group, but note it. Sacrifice (`source=altar`) consumes the offered valuables (they
-  are destroyed, not added to the pool); `source=pool` spends the saved pool on success.
+  are destroyed, not added to the pool); `source=pool` now measures FRESH favor added
+  since the demand began (`#favorPoolBase` is snapshotted in `sacrifice_begin`), then
+  spends `threshold` from the pool on success, so a threshold at or below the standing
+  pool no longer wins on the first tick.
 - Foreshadowed payloads live only in bridge memory, so a restart between the omen and
   its delivery drops the pending action (the spoken omen is still logged to memory).
 - Prayer reading is the most version-fragile piece: a written book is copied to
@@ -361,7 +370,6 @@ function id from the model directly.
 
 ## Roadmap (open, not yet built)
 
-- Optional chain-death floor for global soul-link.
 - Persona tuning toward a structured "dungeon master" (arcs, foreshadowing,
   continuity) instead of a pure mood generator.
 - More event triggers (react to deaths and milestones, not just tribute/demand).

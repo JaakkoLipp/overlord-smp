@@ -1,7 +1,3 @@
-# Anti-feedback: pre-advance the partner's baseline by the damage we are about to deal,
-# so the magic damage we inflict does NOT itself bleed back next iteration (ping-pong loop).
-scoreboard players operation #adj ovTmp = #hp ovTmp
-scoreboard players operation #adj ovTmp *= #ten ovGlobal
-execute store result storage overlord:tmp amt int 1 run scoreboard players get #hp ovTmp
-$execute as @a[tag=$(pair),tag=!ov_self] run scoreboard players operation @s ovDmgPrev += #adj ovTmp
-$execute as @a[tag=$(pair),tag=!ov_self] run function overlord:soullink/hurt with storage overlord:tmp
+# Deliver #per (0.1HP) to the bonded partner via the shared receive path. Excludes the
+# source (ov_self) and any dead partner (ov_dead) so a fallen partner is never targeted.
+$execute as @a[tag=$(pair),tag=!ov_self,tag=!ov_dead] run function overlord:soullink/recv
